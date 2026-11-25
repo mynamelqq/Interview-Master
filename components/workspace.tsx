@@ -22,6 +22,11 @@ type TopicInsight = { pointCount: number; verifiedCount: number; ratedCount: num
 type SearchPoint = PointCandidate;
 const db = getBrowserClient();
 
+function chooseRandomTopic(topics: Topic[], previousId: string | null): Topic | null {
+  const choices = topics.filter(topic => topics.length === 1 || topic.id !== previousId);
+  return choices.length ? choices[Math.floor(Math.random() * choices.length)] : null;
+}
+
 export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [user, setUser] = useState<User | null>(null);
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
@@ -183,6 +188,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         setTopicsLoad("loading");
         setJobs([]);
         setJobsLoaded(false);
+        setTaskDrawerOpen(false);
         setTopicInsights({});
         setInsightsStatus("loading");
         setSearchPoints([]);
@@ -362,9 +368,8 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     window.history.pushState({}, "", `/knowledge/${id}`);
   }
   function openRandomTopic() {
-    const choices = publishedTopics.filter(topic => publishedTopics.length === 1 || topic.id !== lastRandomTopicId);
-    if (!choices.length) return;
-    const topic = choices[Math.floor(Math.random() * choices.length)];
+    const topic = chooseRandomTopic(publishedTopics, lastRandomTopicId);
+    if (!topic) return;
     setLastRandomTopicId(topic.id);
     openTopic(topic.id);
   }

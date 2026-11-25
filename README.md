@@ -4,7 +4,7 @@ AI 技术面试知识库的首条垂直链路：注册登录与邮箱确认 → 
 
 ## 本地启动
 
-1. 在 Supabase 创建项目，打开 SQL Editor，按顺序执行 [`202611240001_init.sql`](supabase/migrations/202611240001_init.sql)、[`202611240002_default_categories.sql`](supabase/migrations/202611240002_default_categories.sql) 和 [`202611250001_point_activity.sql`](supabase/migrations/202611250001_point_activity.sql)。已有项目只需执行第三份迁移。迁移包含阅读行为表、原子批量写入函数与 RLS 用户隔离策略。
+1. 在 Supabase 创建项目，打开 SQL Editor，按顺序执行 [`202611240001_init.sql`](supabase/migrations/202611240001_init.sql)、[`202611240002_default_categories.sql`](supabase/migrations/202611240002_default_categories.sql)、[`202611250001_point_activity.sql`](supabase/migrations/202611250001_point_activity.sql) 和 [`202611250002_admin_readers.sql`](supabase/migrations/202611250002_admin_readers.sql)。已有项目执行尚未运行的迁移。第四份迁移把执行时已有的账号设为管理员；之后注册的账号默认为普通用户。执行前请确认现有账号均应获得管理员权限。
 2. 复制 `.env.example` 为 `.env.local`，填写 Supabase Project URL、publishable/anon key，以及支持 OpenAI Chat Completions JSON mode 的 AI 服务地址、模型名和密钥。`AI_API_KEY` 只在服务端使用。
 3. 运行 `npm install` 和 `npm run dev`，打开 `http://localhost:3000`。在 Supabase Auth 设置中配置邮件确认与站点 URL。
 
@@ -19,6 +19,7 @@ AI 技术面试知识库的首条垂直链路：注册登录与邮箱确认 → 
 - 已建模并启用 RLS：分类、复习进度、复习记录、个人笔记和内容版本表。
 - 知识点卡片先展示回忆提示，揭示后再展示按需组织的参考内容、示例、易错点与追问。四档掌握度分别安排 6 小时、1 天、3 天、7 天后的复习；评分后自动前进，可撤销上次评分。跳过不计分，稍后复习会移到本轮末尾。个人笔记独立保存。
 - 首页按未读、较少接触和随机探索推荐知识点；「换一批」避开刚展示的内容。随便看看模式可无评分翻卡片，原有四档评分保留在「认真复习」。阅读知识点持续可见 8 秒后记为有效阅读，阅读秒数合并上报；知识库显示已浏览数量，不把阅读次数当成掌握度。
+- 首页可以随机打开一个已发布专题，并尽量避开上次随机打开的专题。普通用户可以阅读管理员发布的专题、写个人笔记和记录复习进度；创建、草稿箱、生成任务及内容编辑仅管理员可用。权限在页面、API 和数据库 RLS 三层控制。
 - 下一阶段：自定义分类管理、到期复习、版本恢复等交互。卡片模式已支持主动回忆和掌握度记录。
 
 当前仓库没有 Supabase 项目凭据或 AI API Key，因此数据库迁移和真实生成链路需要在配置后验证。
