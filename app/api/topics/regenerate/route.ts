@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { runGenerationJob } from "@/lib/generation-job";
 import { getRequestClient } from "@/lib/supabase";
 
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 export async function POST(request: Request) {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
