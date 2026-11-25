@@ -16,7 +16,7 @@ export type KnowledgePoint = {
 export type GenerationJob = {
   id: string; topic_id: string | null; input_title: string;
   status: "pending" | "running" | "completed" | "failed";
-  raw_output: { stage?: string; completed_sections?: number; total_sections?: number; http_status?: number } | null;
+  raw_output: { stage?: string; completed_sections?: number; total_sections?: number; http_status?: number; regeneration?: boolean } | null;
   error_message: string | null;
   created_at: string; finished_at: string | null;
 };

@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   if (!process.env.AI_API_KEY || !process.env.AI_MODEL) return Response.json({ error: "AI 服务尚未配置" }, { status: 503 });
   const { data: topic, error: topicError } = await db.from("topics").insert({ user_id: auth.user.id, title, difficulty: body.difficulty || 2, status: "draft", generation_status: "pending" }).select("id").single();
   if (topicError || !topic) return Response.json({ error: topicError?.message || "创建专题失败" }, { status: 500 });
-  const { data: job, error: jobError } = await db.from("topic_generation_jobs").insert({ user_id: auth.user.id, topic_id: topic.id, input_title: title, model_name: process.env.AI_MODEL, prompt_version: "v5", status: "pending" }).select("id").single();
+  const { data: job, error: jobError } = await db.from("topic_generation_jobs").insert({ user_id: auth.user.id, topic_id: topic.id, input_title: title, model_name: process.env.AI_MODEL, prompt_version: "v6", status: "pending" }).select("id").single();
   if (jobError || !job) {
     await db.from("topics").delete().eq("id", topic.id);
     return Response.json({ error: jobError?.message || "创建任务失败" }, { status: 500 });

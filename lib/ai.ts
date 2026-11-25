@@ -2,6 +2,7 @@ import { normalizeMarkdown } from "./markdown.ts";
 
 export type Outline = { summary: string; answer_focus: string; category?: string; sections: { title: string; points: string[] }[] };
 type PointContent = { title: string; recall_prompt: string; content_md: string; example_md: string; key_takeaways: string[]; common_mistakes: string[]; interview_questions: string[] };
+const INTERVIEW_SYSTEM = "你在帮求职者准备技术面试。用通俗、自然的中文解释技术问题，让没有深入研究过源码的人也能听懂。只保留面试常问且有用的内容，先说结论，再解释原因；少用术语和英文缩写。必要的产品名、接口名、代码和通用缩写可以保留，首次出现时用中文说明。不要为了显得专业堆砌英文关键词、冷门细节或空话。只输出一个 JSON 对象，不要输出 Markdown 代码块，不要编造来源。";
 type JsonObject = Record<string, unknown>;
 
 export class AiOutputError extends Error {
@@ -133,8 +134,8 @@ export async function generateOutline(title: string, categories: string[] = []):
     ? `请从以下已有分类中选择最合适的一项，category 必须逐字返回完整分类路径：${categories.map(category => `「${category}」`).join("、")}。没有合适分类时返回空字符串。`
     : "当前没有可用分类，category 返回空字符串。";
   const { data, raw } = await completion(
-    "你是严谨的技术面试知识编辑。只输出一个 JSON 对象，不要输出 Markdown 代码块，不要编造来源。",
-    `为「${title}」设计技术面试知识专题。请严格返回此结构：{"category":"已有分类完整路径或空字符串","summary":"专题摘要","answer_focus":"针对整个专题面试问题的直接回答","sections":[{"title":"章节标题","points":["知识点标题"]}]}。answer_focus 必须非空，只针对专题「${title}」生成一份，不针对章节或知识点分别生成。模拟求职者面对面试官的口头回答：先给核心结论，再用一两句点出最关键的机制、适用条件或取舍，简洁、准确、一语中的；不要写回答建议、提纲或罗列章节。${categoryInstruction}sections 和 points 必须是非空数组；points 的元素必须是字符串。建议 3–4 章、每章 1–3 个知识点，但应以完整覆盖主题为准。覆盖核心原理、实践和常见追问。`,
+    INTERVIEW_SYSTEM,
+    `为「${title}」设计一份够用的技术面试专题，不要写成百科或系统课程。请严格返回此结构：{"category":"已有分类完整路径或空字符串","summary":"一两句通俗的专题摘要","answer_focus":"针对整个专题面试问题的直接回答","sections":[{"title":"章节标题","points":["知识点标题"]}]}。answer_focus 必须非空，只针对专题「${title}」生成一份，不针对章节或知识点分别生成。把它写成求职者能直接说出口的回答：先给结论，再用两三句解释面试官最可能追问的原理、适用场景或取舍；不用开场白、回答建议、提纲和章节罗列。${categoryInstruction}sections 和 points 必须是非空数组；points 的元素必须是字符串。通常安排 2–4 章、每章 1–3 个知识点，优先选择高频问题；不为凑数量加入冷门源码细节、冗长配置或与面试无关的扩展。章节和知识点标题尽量使用中文，保留必要的标准技术名称。`,
     "outline_validation_failed",
   );
   try { return normalizeOutline(data); }
@@ -146,8 +147,8 @@ export async function generateOutline(title: string, categories: string[] = []):
 
 export async function generateSection(topic: string, section: { title: string; points: string[] }): Promise<PointContent[]> {
   const { data, raw } = await completion(
-    "你是严谨的技术面试知识编辑。只输出一个 JSON 对象。准确说明版本限制和不确定之处，不要编造来源。",
-    `专题：${topic}。章节：${section.title}。请逐一讲解这些知识点：${section.points.join("、")}。严格返回 {"points":[{"title":"知识点标题","recall_prompt":"查看答案前的核心问题或回忆提示，要求学习者解释关键机制、原因或取舍","content_md":"完整参考内容，使用适合此知识点的 Markdown 小标题和短段落；必要时先写核心结论，再展开原理","example_md":"代码或配置示例，确有帮助时填写，否则为空字符串","key_takeaways":["适合此知识点时提供补充结论，否则为空数组"],"common_mistakes":["适合此知识点时提供易错点，否则为空数组"],"interview_questions":["适合此知识点时提供面试追问，否则为空数组"]}]}。每个知识点必须有 title、非空 recall_prompt 和非空 content_md；其余模块按知识点特点选用，不要机械套用同一结构。整体面试回答重点已经在专题级生成，这里不要再生成 answer_focus。JSON 字符串中的换行只转义一次；正文里的真实代码请使用正确的语言标识。`,
+    INTERVIEW_SYSTEM,
+    `专题：${topic}。章节：${section.title}。请逐一讲解这些知识点：${section.points.join("、")}。严格返回 {"points":[{"title":"知识点标题","recall_prompt":"一句能引出面试常问问题的回忆提示","content_md":"通俗、简短的中文参考答案，可使用少量 Markdown 小标题和短段落","example_md":"确有助于理解时才给简短代码或配置，否则为空字符串","key_takeaways":["必要的补充结论，否则为空数组"],"common_mistakes":["常见误解，否则为空数组"],"interview_questions":["常见面试追问，否则为空数组"]}]}。每个知识点必须有 title、非空 recall_prompt 和非空 content_md。正文先直接回答是什么，再解释为什么、怎么做或什么时候用，只写面试中能讲清楚的关键内容；优先使用短句和具体例子，避免长篇背景、低频源码细节和重复定义。能用中文说清楚的概念不要反复附英文；必须保留的英文术语首次出现时用中文解释，不要把多个英文关键词堆在同一句。版本差异或不确定之处仅在影响回答准确性时简要说明。其余模块按需选用，不要机械填满，也不要重复正文。整体面试回答重点已经在专题级生成，这里不要再生成 answer_focus。JSON 字符串中的换行只转义一次；真实代码请使用正确的语言标识。`,
     "section_validation_failed",
   );
   const root = object(data);

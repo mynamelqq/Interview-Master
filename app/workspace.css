@@ -57,6 +57,9 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 @media(max-width:760px){.reader-toolbar-actions .toc-mobile-toggle{position:fixed;z-index:31;right:16px;bottom:max(16px,env(safe-area-inset-bottom));min-height:44px;padding:10px 16px;background:#286bd4;color:white;border-color:#286bd4;box-shadow:0 6px 18px rgba(32,41,56,.24)}}
 .reader-top-toggle{display:none}
 @media(max-width:760px){.reader-toolbar-actions .reader-top-toggle{display:inline-block;position:fixed;z-index:29;right:16px;bottom:max(72px,calc(56px + env(safe-area-inset-bottom)));min-height:44px;padding:10px 16px;background:white;color:#286bd4;border-color:#cbdcf5;box-shadow:0 6px 18px rgba(32,41,56,.18)}}
+.regenerate-reader-btn{margin-left:auto;padding:8px 11px;border:1px solid #cbdcf5;border-radius:7px;background:#f4f8ff;color:#286bd4;font-size:12px;font-weight:700}
+.regenerate-reader-btn:hover:not(:disabled){background:#eaf1fe}
+@media(max-width:760px){.regenerate-reader-btn{margin-left:0}}
 .sidebar-jobs{min-width:0;max-width:100%;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable}.sidebar-jobs .job-history,.mobile-jobs .job-history{min-width:0;grid-template-columns:minmax(0,1fr)}.sidebar-jobs .job-item,.mobile-jobs .job-item{min-width:0;max-width:100%}.sidebar-jobs .job-item .job-item-summary,.mobile-jobs .job-item .job-item-summary{width:100%;max-width:100%;overflow:hidden}.sidebar-jobs .job-item-summary strong,.mobile-jobs .job-item-summary strong{min-width:0;white-space:nowrap!important;text-overflow:ellipsis;overflow:hidden}
 .job-popover::before{content:"";position:absolute;left:-12px;top:0;width:12px;height:100%}
 @media(max-width:760px){.job-popover::before{display:none}}
