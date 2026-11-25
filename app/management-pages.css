@@ -51,6 +51,21 @@
 .library-overview span { color: #64748b; font-size: 12px; }
 .library-categories { margin-top: 34px; }
 .library-categories > strong { display: block; margin-bottom: 14px; color: #202938; font-size: 16px; }
+.library-categories-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.library-categories-heading strong { color: #202938; font-size: 16px; }
+.library-categories-heading button,.category-manager button { border: 0; background: none; color: #286bd4; font-size: 12px; font-weight: 700; cursor: pointer; }
+.category-manager { margin-top: 18px; padding: 18px; border: 1px solid #dfe6ee; border-radius: 9px; background: #fff; }
+.category-manager-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }
+.category-manager-head strong { font-size: 14px; }
+.category-manager form { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.category-manager label { display: grid; gap: 5px; min-width: 180px; flex: 1; color: #64748b; font-size: 11px; }
+.category-manager input,.category-manager select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #dfe6ee; border-radius: 6px; background: #fff; color: #334155; font-size: 13px; }
+.category-manager form > button { min-height: 36px; padding: 0 10px; border: 1px solid #cbdcf5; border-radius: 6px; background: #f4f8ff; white-space: nowrap; }
+.category-manager form > button:disabled { opacity: .55; cursor: default; }
+.category-manager > p { margin: 10px 0 0; color: #526176; font-size: 12px; }
+.category-manager-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 18px; max-height: 250px; overflow: auto; margin-top: 18px; border-top: 1px solid #e9edf2; }
+.category-manager-list > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 9px 0; border-bottom: 1px solid #f0f2f5; }
+.category-manager-list span { overflow: hidden; color: #536176; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .library-category-tabs { display: flex; flex-wrap: wrap; gap: 9px; }
 .library-category-tabs button { min-height: 38px; padding: 8px 13px; border: 1px solid #dfe6ee; border-radius: 8px; background: #fff; color: #536176; font-size: 13px; line-height: 1.4; text-align: left; cursor: pointer; }
 .library-category-tabs button:hover { border-color: #a9c2eb; color: #286bd4; }
@@ -68,7 +83,7 @@
 .library-layout { display: flex; align-items: center; gap: 2px; height: 35px; padding: 3px; border: 1px solid #dfe6ee; border-radius: 6px; background: #fff; }
 .library-layout button { height: 27px; padding: 0 9px; border: 0; border-radius: 4px; background: none; color: #64748b; font-size: 11px; cursor: pointer; }
 .library-layout button.active { background: #eaf1fe; color: #286bd4; font-weight: 700; }
-.nav-list button,.mobile-nav button,.reader-toolbar button,.reader-actions button,.library-category-tabs button,.library-layout button,.library-random-button,.draft-tabs button,.task-filters button,.eyebrow,.category-tag,.management-count,.management-heading .page-title,.library-categories > strong,.library-filters > strong,.library-overview,.library-row-meta,.library-row-progress,.reader-toolbar > span { user-select: none; }
+.nav-list button,.mobile-nav button,.reader-toolbar button,.reader-actions button,.library-category-tabs button,.library-layout button,.library-random-button,.draft-tabs button,.task-filters button,.eyebrow,.category-tag,.management-count,.management-heading .page-title,.library-categories-heading,.library-filters > strong,.library-overview,.library-row-meta,.library-row-progress,.reader-toolbar > span { user-select: none; }
 .library-list, .draft-worklist { border: 1px solid #e0e6ee; border-radius: 10px; background: #fff; overflow: hidden; }
 .library-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 120px; align-items: center; gap: 28px; min-height: 132px; padding: 21px 25px; border-bottom: 1px solid #e9edf2; }
 .library-row:last-child, .draft-workrow:last-child { border-bottom: 0; }
@@ -119,6 +134,7 @@
   .library-list.is-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
+  .category-manager-list { grid-template-columns: 1fr; }
   .topbar-end { gap: 0; }
   .task-entry { font-size: 11px; padding: 6px 7px; }
   .task-entry span { display: none; }
