@@ -10,11 +10,13 @@ export async function POST(request: Request) {
   let body: { jobId?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求格式错误" }, { status: 400 }); }
   if (!body.jobId) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
-  if (!process.env.AI_API_KEY || !process.env.AI_MODEL) return Response.json({ error: "AI 服务尚未配置" }, { status: 503 });
-
   const db = getRequestClient(token);
   const { data: auth, error: authError } = await db.auth.getUser(token);
   if (authError || !auth.user) return Response.json({ error: "登录已过期，请重新登录" }, { status: 401 });
+  const { data: profile, error: profileError } = await db.from("profiles").select("is_admin").eq("id", auth.user.id).single();
+  if (profileError) return Response.json({ error: "无法验证管理员权限" }, { status: 503 });
+  if (!profile.is_admin) return Response.json({ error: "只有管理员可以重试生成任务" }, { status: 403 });
+  if (!process.env.AI_API_KEY || !process.env.AI_MODEL) return Response.json({ error: "AI 服务尚未配置" }, { status: 503 });
   const { data: job, error: jobError } = await db.from("topic_generation_jobs")
     .select("id,topic_id,input_title,status").eq("id", body.jobId).eq("user_id", auth.user.id).single();
   if (jobError || !job || !job.topic_id) return Response.json({ error: "找不到这项生成任务" }, { status: 404 });

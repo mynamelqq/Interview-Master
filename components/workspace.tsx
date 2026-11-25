@@ -24,6 +24,7 @@ const db = getBrowserClient();
 
 export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [user, setUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const authUserIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<View>(initialTopicId ? "reader" : "home");
@@ -66,6 +67,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [mode, setMode] = useState<"read" | "cards">("read");
   const [lastTopicId, setLastTopicId] = useState<string | null>(null);
   const [lastPointId, setLastPointId] = useState<string | null>(null);
+  const [lastRandomTopicId, setLastRandomTopicId] = useState<string | null>(null);
   const pendingReadPointId = useRef<string | null>(null);
   const activityRef = useRef(pointActivity);
   useEffect(() => { activityRef.current = pointActivity; }, [pointActivity]);
@@ -176,6 +178,8 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       if (authUserIdRef.current !== (next?.id || null)) {
         authUserIdRef.current = next?.id || null;
         setTopics([]);
+        setIsAdmin(null);
+        setView(initialTopicId ? "reader" : "home");
         setTopicsLoad("loading");
         setJobs([]);
         setJobsLoaded(false);
@@ -193,7 +197,17 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     db.auth.getUser().then(({ data }) => { applyUser(data.user); setReady(true); });
     const { data: listener } = db.auth.onAuthStateChange((_event, session) => applyUser(session?.user || null));
     return () => listener.subscription.unsubscribe();
-  }, []);
+  }, [initialTopicId]);
+  useEffect(() => {
+    if (!db || !user) return;
+    let cancelled = false;
+    void db.from("profiles").select("is_admin").eq("id", user.id).single().then(({ data, error: roleError }) => {
+      if (cancelled) return;
+      if (roleError) setError("无法读取账户权限，请确认已执行管理员迁移。");
+      setIsAdmin(!roleError && data?.is_admin === true);
+    });
+    return () => { cancelled = true; };
+  }, [user]);
   useEffect(() => {
     if (!user) return;
     const topicId = window.localStorage.getItem(`im:last-topic:${user.id}`);
@@ -212,11 +226,11 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   useEffect(() => { if (user) { void Promise.resolve().then(load); } }, [user, load]);
   useEffect(() => { if (user) { void Promise.resolve().then(loadInsights); } }, [user, loadInsights]);
   useEffect(() => {
-    if (!user) return;
+    if (!user || isAdmin !== true) return;
     void Promise.resolve().then(loadJobs);
     const timer = window.setInterval(() => { void loadJobs(); }, 5000);
     return () => window.clearInterval(timer);
-  }, [user, loadJobs]);
+  }, [user, isAdmin, loadJobs]);
   useEffect(() => {
     if (!db || !selectedId || !user) return;
     let cancelled = false;
@@ -279,7 +293,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
 
   const selected = topics.find(topic => topic.id === selectedId);
   const publishedTopics = topics.filter(topic => topic.status === "published");
-  const draftTopics = reviewableDrafts(topics, jobs, jobsLoaded);
+  const draftTopics = isAdmin ? reviewableDrafts(topics, jobs, jobsLoaded) : [];
   const sections = points.filter(point => !point.parent_id);
   const cards = points.filter(point => point.parent_id);
   function jumpToTocTarget(event: React.MouseEvent<HTMLAnchorElement>, targetId: string) {
@@ -347,6 +361,13 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (user) { window.localStorage.setItem(`im:last-topic:${user.id}`, id); setLastTopicId(id); setLastPointId(window.localStorage.getItem(`im:last-point:${user.id}:${id}`)); }
     window.history.pushState({}, "", `/knowledge/${id}`);
   }
+  function openRandomTopic() {
+    const choices = publishedTopics.filter(topic => publishedTopics.length === 1 || topic.id !== lastRandomTopicId);
+    if (!choices.length) return;
+    const topic = choices[Math.floor(Math.random() * choices.length)];
+    setLastRandomTopicId(topic.id);
+    openTopic(topic.id);
+  }
   const onPointViewed = useCallback((id: string) => {
     if (!user || !selectedId) return;
     const now = new Date().toISOString();
@@ -376,6 +397,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     return () => cancelAnimationFrame(frame);
   }, [view, mode, pointsLoad]);
   function navigate(next: View) {
+    if ((next === "create" || next === "drafts") && isAdmin !== true) return;
     setView(next); setError(""); setFocus(false); setMobileNavOpen(false);
     setReadingNavOpen(false);
     window.history.pushState({}, "", "/");
@@ -392,7 +414,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     }, 350);
   }
   async function createManual(title: string) {
-    if (!db || !user) return;
+    if (!db || !user || isAdmin !== true) return;
     setBusy(true); setError("");
     const { data, error: saveError } = await db.from("topics").insert({ title, user_id: user.id, generation_status: "completed" }).select("id").single();
     setBusy(false);
@@ -400,7 +422,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     await load(); openTopic(data.id);
   }
   async function generate(title: string) {
-    if (!db) return;
+    if (!db || isAdmin !== true) return;
     setBusy(true); setError("");
     try {
       const { data: session } = await db.auth.getSession();
@@ -414,7 +436,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     finally { setBusy(false); }
   }
   async function retryJob(job: GenerationJob) {
-    if (!db || job.status !== "failed" || retryingJobId) return;
+    if (!db || isAdmin !== true || job.status !== "failed" || retryingJobId) return;
     setRetryingJobId(job.id); setError("");
     try {
       const { data: session } = await db.auth.getSession();
@@ -430,7 +452,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     finally { setRetryingJobId(null); }
   }
   async function updatePoint(point: KnowledgePoint, content: string) {
-    if (!db) return false;
+    if (!db || isAdmin !== true) return false;
     const normalized = normalizeMarkdown(content, true);
     const { error: saveError } = await db.from("knowledge_points").update({ content_md: normalized, verification_status: "checked" }).eq("id", point.id);
     if (saveError) { setError(saveError.message); return false; }
@@ -438,7 +460,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     return true;
   }
   async function verifyPoint(point: KnowledgePoint) {
-    if (!db) return;
+    if (!db || isAdmin !== true) return;
     const { error: saveError } = await db.from("knowledge_points").update({ verification_status: "verified" }).eq("id", point.id);
     if (saveError) setError(saveError.message);
     else { setPoints(previous => previous.map(item => item.id === point.id ? { ...item, verification_status: "verified" } : item)); void loadInsights(); }
@@ -451,7 +473,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     return true;
   }
   async function publish() {
-    if (!db || !selected) return;
+    if (!db || isAdmin !== true || !selected) return;
     const generationJob = jobs.find(job => job.topic_id === selected.id);
     if (generationJob && generationJob.status !== "completed") {
       setError("专题生成尚未成功完成，不能发布到知识库。");
@@ -462,7 +484,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     else await load();
   }
   async function deleteDraft(topic: Topic) {
-    if (!db || topic.status !== "draft") return;
+    if (!db || isAdmin !== true || topic.status !== "draft") return;
     if (jobs.some(job => job.topic_id === topic.id && (job.status === "pending" || job.status === "running"))) {
       setError("专题仍在生成中，完成或失败后才能删除草稿。");
       return;
@@ -486,6 +508,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   if (!ready) return <div className="center-screen">正在载入知识库…</div>;
   if (!db) return <div className="center-screen setup"><div className="brand-mark">IM</div><h1>Interview Master</h1><p>先配置 Supabase 环境变量并执行数据库迁移，即可开始使用。</p><code>NEXT_PUBLIC_SUPABASE_URL · NEXT_PUBLIC_SUPABASE_ANON_KEY</code></div>;
   if (!user) return <AuthScreen />;
+  if (isAdmin === null) return <div className="center-screen" role="status">正在确认账户权限…</div>;
 
   return <div className={`shell ${navCollapsed ? "shell-nav-collapsed" : ""} ${view === "reader" ? "shell-reading" : ""} ${readingNavOpen ? "shell-reading-nav-open" : ""} ${focus ? "shell-focus" : ""} ${mobileNavOpen ? "mobile-nav-open" : ""}`}>
     {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="关闭导航" onClick={() => setMobileNavOpen(false)} />}
@@ -496,41 +519,42 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         <button className={view === "home" ? "active" : ""} onClick={() => navigate("home")}><span>⌂</span>学习首页</button>
         <button className={view === "browse" ? "active" : ""} onClick={() => navigate("browse")}><span>◈</span>随便看看</button>
         <button className={view === "library" || (view === "reader" && selected?.status === "published") ? "active" : ""} onClick={() => navigate("library")}><span>▤</span>我的知识库</button>
-        <button className={view === "drafts" || (view === "reader" && selected?.status === "draft") ? "active" : ""} onClick={() => navigate("drafts")}><span>▣</span>草稿箱 <small>{draftTopics.length}</small></button>
-        <button className={view === "create" ? "active" : ""} onClick={() => navigate("create")}><span>✳</span>AI 创建专题</button>
+        {isAdmin && <button className={view === "drafts" || (view === "reader" && selected?.status === "draft") ? "active" : ""} onClick={() => navigate("drafts")}><span>▣</span>草稿箱 <small>{draftTopics.length}</small></button>}
+        {isAdmin && <button className={view === "create" ? "active" : ""} onClick={() => navigate("create")}><span>✳</span>AI 创建专题</button>}
       </nav>
       <div className="sidebar-bottom"><div className="profile-dot">{user.email?.slice(0, 1).toUpperCase()}</div><div className="profile-text"><strong>{user.email?.split("@")[0]}</strong><small>个人知识库</small></div><button aria-label="退出登录" title="退出登录" onClick={() => db?.auth.signOut()}>↪</button></div>
     </aside>
     <main className="main-area">
       <div className="mobile-bar"><button className="mobile-menu-button" aria-label="打开导航" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}>☰</button><button className="brand" onClick={() => navigate("home")}><span className="brand-mark">IM</span><strong>Interview Master</strong></button></div>
-      {view !== "reader" && <header className="workspace-topbar"><label className="workspace-search"><span aria-hidden="true">⌕</span><input aria-label="全局搜索专题和知识点" placeholder="搜索专题和知识点" value={query} onFocus={() => { if (view !== "library") navigate("library"); }} onChange={event => setQuery(event.target.value)} /></label><div className="topbar-end"><button className="task-entry" onClick={() => setTaskDrawerOpen(true)}>生成任务{jobs.some(job => job.status === "pending" || job.status === "running") && <span>{jobs.filter(job => job.status === "pending" || job.status === "running").length} 进行中</span>}{!jobs.some(job => job.status === "pending" || job.status === "running") && jobs.some(job => job.status === "failed") && <span className="has-failure">有失败任务</span>}</button><span className="workspace-account">{user.email?.split("@")[0]}</span></div></header>}
+      {view !== "reader" && <header className="workspace-topbar"><label className="workspace-search"><span aria-hidden="true">⌕</span><input aria-label="全局搜索专题和知识点" placeholder="搜索专题和知识点" value={query} onFocus={() => { if (view !== "library") navigate("library"); }} onChange={event => setQuery(event.target.value)} /></label><div className="topbar-end">{isAdmin && <button className="task-entry" onClick={() => setTaskDrawerOpen(true)}>生成任务{jobs.some(job => job.status === "pending" || job.status === "running") && <span>{jobs.filter(job => job.status === "pending" || job.status === "running").length} 进行中</span>}{!jobs.some(job => job.status === "pending" || job.status === "running") && jobs.some(job => job.status === "failed") && <span className="has-failure">有失败任务</span>}</button>}<span className="workspace-account">{user.email?.split("@")[0]}</span></div></header>}
       {error && <div role="alert" className="error-banner">{error}<button onClick={() => setError("")}>关闭</button></div>}
       {view === "home" && <section className="page-wrap home-page">
         <div className="home-topline"><span>学习工作台</span><span>{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(new Date())}</span></div>
         <h1 className="hero-title">今天想看点什么？</h1>
         <p className="hero-copy">不需要制定计划，从感兴趣的知识开始。</p>
-        <div className="home-layout"><div className="home-main">
+        <div className={`home-layout ${isAdmin ? "" : "home-layout-full"}`}><div className="home-main">
           <div className="home-priorities">
             <section className="home-priority"><div className="section-header"><h2>继续上次阅读</h2><button className="text-btn" onClick={() => navigate("library")}>浏览知识库 →</button></div>
-              {continueTopic ? <button className="continue-panel" onClick={() => openTopic(continueTopic.id, lastPointId || undefined)}><span className="topic-category">{categoryName(continueTopic.category_id)}</span><strong>{continueTopic.title}</strong><span>{lastPointId ? `上次看到：${searchPoints.find(point => point.id === lastPointId)?.title || "专题知识点"}` : continueTopic.summary || "从上次阅读的专题继续。"}</span><em>继续阅读 <span aria-hidden="true">→</span></em></button> : <div className="empty home-empty">知识库还没有专题。创建并检查第一份专题，开始你的学习工作台。<button className="primary-btn" onClick={() => navigate("create")}>创建知识专题</button></div>}
+              {continueTopic ? <button className="continue-panel" onClick={() => openTopic(continueTopic.id, lastPointId || undefined)}><span className="topic-category">{categoryName(continueTopic.category_id)}</span><strong>{continueTopic.title}</strong><span>{lastPointId ? `上次看到：${searchPoints.find(point => point.id === lastPointId)?.title || "专题知识点"}` : continueTopic.summary || "从上次阅读的专题继续。"}</span><em>继续阅读 <span aria-hidden="true">→</span></em></button> : <div className="empty home-empty">知识库还没有已发布专题。{isAdmin && <button className="primary-btn" onClick={() => navigate("create")}>创建知识专题</button>}</div>}
             </section>
             <section className="home-priority"><div className="section-header"><h2>随便看看</h2><span className="home-heading-meta">无需评分</span></div><div className="home-priority-panel review-panel"><strong>随机翻几张知识卡片</strong><p>想一想，再看参考内容。看完直接翻下一张，随时可以离开。</p><button className="home-priority-action" onClick={() => navigate("browse")}>开始随便看看 <span aria-hidden="true">→</span></button></div></section>
           </div>
+          <div className="home-random-topic"><div><strong>随机查看专题</strong><p>想完整读一篇？从已发布的专题里随机挑一个。</p></div><button className="text-btn" disabled={!publishedTopics.length} onClick={openRandomTopic}>随机打开 →</button></div>
           <section className="home-review-focus"><div className="section-header"><h2>为你推荐</h2><button className="text-btn" disabled={recommendationPool.length < 2} onClick={() => { setRecommendations(recommendPoints(recommendationPool, pointActivity, 3, recommendations.map(point => point.id))); }}>换一批 →</button></div>{insightsStatus === "loaded" ? recommendations.length ? <div className="home-review-list">{recommendations.map(point => { const topic = publishedTopics.find(item => item.id === point.topic_id); return <button key={point.id} onClick={() => openTopic(point.topic_id, point.id)}><span><strong>{point.title}</strong><small className="home-recommend-topic">{topic?.title || "专题"}</small><small>{topic ? categoryName(topic.category_id) : "未分类"} · {point.reason === "unread" ? "之前还未阅读" : point.reason === "revisit" ? "最近接触较少" : "换一个知识方向"}</small></span><span className="home-review-stats"><em>{point.reason === "unread" ? "还没看过" : point.reason === "revisit" ? "重新接触" : "随机探索"}</em></span><span aria-hidden="true">→</span></button>; })}</div> : <div className="empty">还没有可推荐的知识点。先发布一个专题吧。</div> : <div className="empty" role="status">{insightsStatus === "error" ? "推荐信息暂时无法加载，请刷新页面重试。" : "正在挑选知识点…"}</div>}</section>
           <div className="section-header"><h2>最近专题</h2><button className="text-btn" onClick={() => navigate("library")}>查看全部 →</button></div>
           {publishedTopics.length ? <div className="recent-list">{publishedTopics.slice(0, 4).map(topic => <TopicTile key={topic.id} topic={topic} category={categoryName(topic.category_id)} onOpen={() => openTopic(topic.id)} />)}</div> : <div className="empty">发布的专题会出现在这里。</div>}
-        </div><aside className="home-aside"><h2>今日待处理</h2><p>从待审核内容继续整理，再回到知识库阅读。</p><button onClick={() => navigate("drafts")}><strong>{draftTopics.length}</strong><span>份待检查草稿</span><b>查看草稿 →</b></button><button onClick={() => setTaskDrawerOpen(true)}><strong>{jobs.filter(job => job.status === "pending" || job.status === "running").length}</strong><span>项生成任务</span><b>查看任务 →</b></button><button className="aside-create" onClick={() => navigate("create")}>＋ 创建知识专题</button></aside></div>
+        </div>{isAdmin && <aside className="home-aside"><h2>今日待处理</h2><p>从待审核内容继续整理，再回到知识库阅读。</p><button onClick={() => navigate("drafts")}><strong>{draftTopics.length}</strong><span>份待检查草稿</span><b>查看草稿 →</b></button><button onClick={() => setTaskDrawerOpen(true)}><strong>{jobs.filter(job => job.status === "pending" || job.status === "running").length}</strong><span>项生成任务</span><b>查看任务 →</b></button><button className="aside-create" onClick={() => navigate("create")}>＋ 创建知识专题</button></aside>}</div>
       </section>}
       {view === "library" && <LibraryPanel topics={publishedTopics} drafts={draftTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} searchPoints={searchPoints} query={query} categoryName={categoryName} />}
       {view === "browse" && (insightsStatus === "loaded" ? <CasualCards points={recommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} onSeen={onCardSeen} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
-      {view === "drafts" && <DraftPanel topics={draftTopics} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} onOpen={openTopic} onCreate={() => navigate("create")} onDelete={topic => void deleteDraft(topic)} />}
-      {view === "create" && <CreatePanel busy={busy} onGenerate={generate} onManual={createManual} />}
+      {view === "drafts" && isAdmin && <DraftPanel topics={draftTopics} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} onOpen={openTopic} onCreate={() => navigate("create")} onDelete={topic => void deleteDraft(topic)} />}
+      {view === "create" && isAdmin && <CreatePanel busy={busy} onGenerate={generate} onManual={createManual} />}
       {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onBack={() => navigate("library")} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
       {view === "reader" && focus && selected && pointsLoad.status !== "loaded" && (pointsLoad.status === "error" ? <div className="reader-load-error">专题内容加载失败。<button className="text-btn" onClick={() => setFocus(false)}>返回专题页</button></div> : <ReaderLoading full />)}
-      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(selected?.status === "draft" ? "drafts" : "library")}>← 返回{selected?.status === "draft" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} note={notes[point.id] || ""} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onSaveNote={saveNote} />)}</section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
+      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(selected?.status === "draft" ? "drafts" : "library")}>← 返回{selected?.status === "draft" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} canEdit={isAdmin} note={notes[point.id] || ""} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onSaveNote={saveNote} />)}</section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
       {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
-    </main><nav className="mobile-nav" aria-label="手机导航"><button onClick={() => navigate("home")}>首页</button><button onClick={() => navigate("browse")}>随便看看</button><button onClick={() => navigate("library")}>知识库</button><button onClick={() => navigate("drafts")}>草稿</button><button onClick={() => navigate("create")}>创建专题</button></nav>
-    {taskDrawerOpen && <TaskDrawer jobs={jobs} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onDelete={id => { const topic = topics.find(item => item.id === id); if (topic) void deleteDraft(topic); }} retryingJobId={retryingJobId} />}
+    </main><nav className="mobile-nav" aria-label="手机导航"><button onClick={() => navigate("home")}>首页</button><button onClick={() => navigate("browse")}>随便看看</button><button onClick={() => navigate("library")}>知识库</button>{isAdmin && <button onClick={() => navigate("drafts")}>草稿</button>}{isAdmin && <button onClick={() => navigate("create")}>创建专题</button>}</nav>
+    {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onDelete={id => { const topic = topics.find(item => item.id === id); if (topic) void deleteDraft(topic); }} retryingJobId={retryingJobId} />}
   </div>;
 }
 
@@ -668,7 +692,7 @@ function CreatePanel({ busy, onGenerate, onManual }: { busy: boolean; onGenerate
   return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入专题名称，AI 会自动选择分类，生成回答重点、必要原理和练习内容。完成后可在草稿箱检查。</p><form onSubmit={event => { event.preventDefault(); if (title.trim()) onGenerate(title.trim()); }}><label htmlFor="topic-title">专题名称</label><input id="topic-title" required maxLength={120} placeholder="例如：Redis 持久化机制" value={title} onChange={event => setTitle(event.target.value)} /><div className="generation-list"><span>生成内容</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={busy || !title.trim()}>{busy ? "正在提交任务…" : "AI 生成专题"}</button><button type="button" className="text-btn" disabled={busy || !title.trim()} onClick={() => onManual(title.trim())}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
 }
 
-function PointBlock({ point, note, mastery, onSave, onVerify, onSaveNote }: { point: KnowledgePoint; note: string; mastery: number; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void; onSaveNote: (pointId: string, content: string) => Promise<boolean> }) {
+function PointBlock({ point, note, mastery, canEdit, onSave, onVerify, onSaveNote }: { point: KnowledgePoint; note: string; mastery: number; canEdit: boolean; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void; onSaveNote: (pointId: string, content: string) => Promise<boolean> }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [content, setContent] = useState(point.content_md || "");
@@ -679,12 +703,12 @@ function PointBlock({ point, note, mastery, onSave, onVerify, onSaveNote }: { po
     <div className="point-title"><h3>{point.title}</h3>{point.verification_status === "ai_draft" && <span className="point-verification ai_draft">待校验</span>}</div>
     {editing ? <div className="edit-area"><textarea aria-label={`编辑${point.title}`} value={content} onChange={event => setContent(event.target.value)} rows={12} /><div><button className="primary-btn" disabled={saving} onClick={async () => { setSaving(true); const saved = await onSave(point, content); setSaving(false); if (saved) setEditing(false); }}>{saving ? "保存中…" : "保存修改"}</button><button className="text-btn" disabled={saving} onClick={() => { setContent(point.content_md || ""); setEditing(false); }}>取消</button></div></div> : <>
       
-      <div className="content-section"><h4>核心原理</h4><MarkdownContent content={point.content_md || "暂无内容，点击编辑补充知识讲解。"} prose /></div>
+      <div className="content-section"><h4>核心原理</h4><MarkdownContent content={point.content_md || (canEdit ? "暂无内容，点击编辑补充知识讲解。" : "暂无内容。")} prose /></div>
       {point.example_md && <div className="content-section example-section"><h4>代码示例</h4><MarkdownContent content={point.example_md} /></div>}
       {point.common_mistakes?.length > 0 && <div className="mistakes"><strong>易错点</strong><ul>{point.common_mistakes.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {point.key_takeaways?.length > 0 && <div className="takeaways"><strong>补充要点</strong><ul>{point.key_takeaways.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {point.interview_questions?.length > 0 && <details className="followups"><summary>面试追问（{point.interview_questions.length}）</summary><ul>{point.interview_questions.map((item, index) => <li key={index}>{item}</li>)}</ul></details>}
-      <div className="point-actions"><button className="edit-link" onClick={() => { setContent(point.content_md || ""); setEditing(true); }}>编辑知识点</button>{point.verification_status !== "verified" && <button className="verify-link" onClick={() => onVerify(point)}>标记已校验</button>}{mastery > 0 && <span className={`mastery-inline ${mastery >= 3 ? "mastered" : "weak"}`}>{mastery >= 3 ? "已掌握" : "待巩固"}</span>}</div>
+      <div className="point-actions">{canEdit && <button className="edit-link" onClick={() => { setContent(point.content_md || ""); setEditing(true); }}>编辑知识点</button>}{canEdit && point.verification_status !== "verified" && <button className="verify-link" onClick={() => onVerify(point)}>标记已校验</button>}{mastery > 0 && <span className={`mastery-inline ${mastery >= 3 ? "mastered" : "weak"}`}>{mastery >= 3 ? "已掌握" : "待巩固"}</span>}</div>
       <div className="personal-note"><div className="personal-note-heading"><strong>我的笔记</strong><button onClick={() => { setNoteDraft(note); setNoteEditing(value => !value); }}>{noteEditing ? "收起" : note ? "编辑笔记" : "添加笔记"}</button></div>{noteEditing ? <div className="note-editor"><textarea aria-label={`${point.title}的个人笔记`} value={noteDraft} onChange={event => setNoteDraft(event.target.value)} rows={5} placeholder="写下自己的理解、疑问或补充…" /><button className="primary-btn" disabled={noteSaving} onClick={async () => { setNoteSaving(true); const saved = await onSaveNote(point.id, noteDraft); setNoteSaving(false); if (saved) setNoteEditing(false); }}>{noteSaving ? "保存中…" : "保存笔记"}</button></div> : note ? <MarkdownContent content={note} className="note-content" prose /> : <p>记录自己的理解和补充，复习时更容易想起。</p>}</div>
     </>}
   </div>;
@@ -712,7 +736,7 @@ function AuthScreen() {
     setBusy(false);
     setMessage(error ? error.message : "确认邮件已重新发送。请检查收件箱和垃圾邮件文件夹。");
   }
-  return <div className="auth-page"><div className="auth-intro"><div className="brand-mark">IM</div><h1>把每个面试专题，<br />学成自己的知识。</h1><p>构建内容，完整阅读，主动回忆。<br />你的技术知识库，从这里开始。</p></div>{awaitingEmail ? <section className="auth-form email-confirm" aria-labelledby="email-confirm-title"><div className="email-symbol" aria-hidden="true">✉</div><h2 id="email-confirm-title">请确认你的邮箱</h2><p>我们已向 <strong>{email}</strong> 发送确认邮件。</p><ol><li>打开邮箱，找到 Interview Master 的确认邮件。</li><li>点击邮件中的确认链接。</li><li>返回这里登录，开始创建专题。</li></ol><p className="email-help">没有收到？先查看垃圾邮件文件夹。邮件送达可能需要几分钟。</p><button className="primary-btn" disabled={busy} onClick={resend}>{busy ? "正在发送…" : "重新发送确认邮件"}</button><button className="text-btn" onClick={() => { setAwaitingEmail(false); setRegister(false); setMessage(""); }}>已确认，返回登录</button>{message && <p role="status" className="auth-message">{message}</p>}</section> : <form className="auth-form" onSubmit={submit}><h2>{register ? "创建账户" : "欢迎回来"}</h2><p>登录后同步你的专题和学习内容。</p><label htmlFor="email">邮箱</label><input id="email" type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /><label htmlFor="password">密码</label><input id="password" type="password" autoComplete={register ? "new-password" : "current-password"} minLength={6} value={password} onChange={event => setPassword(event.target.value)} required /><button className="primary-btn" disabled={busy}>{busy ? "请稍候…" : register ? "注册" : "登录"}</button>{message && <p role="alert" className="auth-message">{message}</p>}<button type="button" className="text-btn" onClick={() => { setRegister(value => !value); setMessage(""); }}>{register ? "已有账户？登录" : "还没有账户？注册"}</button></form>}</div>;
+  return <div className="auth-page"><div className="auth-intro"><div className="brand-mark">IM</div><h1>把每个面试专题，<br />学成自己的知识。</h1><p>完整阅读，随时回顾，持续积累。<br />你的技术知识库，从这里开始。</p></div>{awaitingEmail ? <section className="auth-form email-confirm" aria-labelledby="email-confirm-title"><div className="email-symbol" aria-hidden="true">✉</div><h2 id="email-confirm-title">请确认你的邮箱</h2><p>我们已向 <strong>{email}</strong> 发送确认邮件。</p><ol><li>打开邮箱，找到 Interview Master 的确认邮件。</li><li>点击邮件中的确认链接。</li><li>返回这里登录，开始阅读专题。</li></ol><p className="email-help">没有收到？先查看垃圾邮件文件夹。邮件送达可能需要几分钟。</p><button className="primary-btn" disabled={busy} onClick={resend}>{busy ? "正在发送…" : "重新发送确认邮件"}</button><button className="text-btn" onClick={() => { setAwaitingEmail(false); setRegister(false); setMessage(""); }}>已确认，返回登录</button>{message && <p role="status" className="auth-message">{message}</p>}</section> : <form className="auth-form" onSubmit={submit}><h2>{register ? "创建账户" : "欢迎回来"}</h2><p>登录后同步你的专题和学习内容。</p><label htmlFor="email">邮箱</label><input id="email" type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} required /><label htmlFor="password">密码</label><input id="password" type="password" autoComplete={register ? "new-password" : "current-password"} minLength={6} value={password} onChange={event => setPassword(event.target.value)} required /><button className="primary-btn" disabled={busy}>{busy ? "请稍候…" : register ? "注册" : "登录"}</button>{message && <p role="alert" className="auth-message">{message}</p>}<button type="button" className="text-btn" onClick={() => { setRegister(value => !value); setMessage(""); }}>{register ? "已有账户？登录" : "还没有账户？注册"}</button></form>}</div>;
 }
 
 
