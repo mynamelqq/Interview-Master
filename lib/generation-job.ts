@@ -38,6 +38,15 @@ export async function runGenerationJob({ token, topicId, jobId, title }: JobInpu
     if (topicError) throw topicError;
     const { error: finishError } = await db.from("topic_generation_jobs").update({ status: "completed", raw_output: { stage: "completed", outline }, finished_at: new Date().toISOString() }).eq("id", jobId);
     if (finishError) throw finishError;
+    const { data: existing, error: duplicateCheckError } = await db.from("topics")
+      .select("id").eq("status", "published").eq("title", title).limit(1);
+    if (duplicateCheckError) {
+      console.error("无法检查知识库同名专题", duplicateCheckError);
+    } else if (!existing?.length) {
+      const { error: publishError } = await db.from("topics")
+        .update({ status: "published" }).eq("id", topicId).eq("status", "draft").eq("generation_status", "completed");
+      if (publishError) console.error("专题已生成，但自动发布失败", publishError);
+    }
   } catch (error) {
     const errorLike = error !== null && typeof error === "object" ? error as { message?: unknown; details?: unknown } : null;
     const message = error instanceof Error && error.message.trim()

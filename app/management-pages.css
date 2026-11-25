@@ -62,9 +62,13 @@
 .library-filters > strong span { margin-left: 5px; color: #64748b; font-size: 12px; font-weight: 500; }
 .library-filters label { display: flex; flex-direction: column; gap: 5px; color: #64748b; font-size: 11px; }
 .library-filters select { min-width: 120px; height: 35px; padding: 0 26px 0 10px; border: 1px solid #dfe6ee; border-radius: 6px; background: #fff; color: #334155; font-size: 12px; }
+.library-random-button { display: grid; place-items: center; width: 35px; height: 35px; flex: none; border: 1px solid #dfe6ee; border-radius: 6px; background: #fff; color: #286bd4; cursor: pointer; }
+.library-random-button:hover:not(:disabled) { border-color: #a9c2eb; background: #eaf1fe; }
+.library-random-button:disabled { color: #94a3b8; }
 .library-layout { display: flex; align-items: center; gap: 2px; height: 35px; padding: 3px; border: 1px solid #dfe6ee; border-radius: 6px; background: #fff; }
 .library-layout button { height: 27px; padding: 0 9px; border: 0; border-radius: 4px; background: none; color: #64748b; font-size: 11px; cursor: pointer; }
 .library-layout button.active { background: #eaf1fe; color: #286bd4; font-weight: 700; }
+.nav-list button,.mobile-nav button,.reader-toolbar button,.reader-actions button,.library-category-tabs button,.library-layout button,.library-random-button,.draft-tabs button,.task-filters button,.eyebrow,.category-tag,.management-count,.management-heading .page-title,.library-categories > strong,.library-filters > strong,.library-overview,.library-row-meta,.library-row-progress,.reader-toolbar > span { user-select: none; }
 .library-list, .draft-worklist { border: 1px solid #e0e6ee; border-radius: 10px; background: #fff; overflow: hidden; }
 .library-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 120px; align-items: center; gap: 28px; min-height: 132px; padding: 21px 25px; border-bottom: 1px solid #e9edf2; }
 .library-row:last-child, .draft-workrow:last-child { border-bottom: 0; }
