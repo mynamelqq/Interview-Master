@@ -6,7 +6,7 @@ const now = Date.parse("2026-11-25T12:00:00Z");
 const points = Array.from({ length: 12 }, (_, index) => ({ id: String(index), topic_id: String(index % 4), title: `Point ${index}` }));
 const activity = Object.fromEntries(points.slice(6).map((point, index) => [point.id, {
   knowledge_point_id: point.id, view_count: index + 1, reading_seconds: 20,
-  last_viewed_at: new Date(now - (index + 1) * 86400000).toISOString(),
+  last_viewed_at: new Date(now - (index + 8) * 86400000).toISOString(),
   card_seen_count: 0, last_card_seen_at: null, is_favorite: false, excluded_until: null,
 }]));
 
@@ -17,6 +17,12 @@ test("recommendations mix unread, revisit, and exploration without scoring maste
   assert.equal(result.filter(point => point.reason === "revisit").length, 4);
   assert.equal(result.filter(point => point.reason === "explore").length, 2);
   assert.equal(new Set(result.map(point => point.id)).size, 10);
+});
+
+test("recently read points are exploration, not long-unread recommendations", () => {
+  const recent = { ...activity["6"], last_viewed_at: new Date(now - 86400000).toISOString() };
+  const result = recommendPoints([points[6]], { "6": recent }, 1, [], now, () => .5);
+  assert.equal(result[0].reason, "explore");
 });
 
 test("exclusions and recently shown points are avoided where possible", () => {

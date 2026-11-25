@@ -23,7 +23,7 @@ export function ReadingActivityTracker({ onViewed }: { onViewed: (id: string) =>
         const id = (entry.target as HTMLElement).dataset.pointId;
         if (!id) continue;
         if (entry.isIntersecting) visible.add(id);
-        else visible.delete(id);
+        else { visible.delete(id); if (!viewed.has(id)) seconds.delete(id); }
       }
     }, { rootMargin: "-15% 0px -35% 0px", threshold: 0 });
     for (const element of elements) {
@@ -66,7 +66,7 @@ export function ReadingActivityTracker({ onViewed }: { onViewed: (id: string) =>
       } else if (duration > 8) add(id, 0, 1);
     }, 1000);
     const batchTimer = window.setInterval(() => { void flush(); }, 20000);
-    const onVisibility = () => { if (document.visibilityState === "hidden") void flush(); };
+    const onVisibility = () => { if (document.visibilityState === "hidden") { for (const id of seconds.keys()) if (!viewed.has(id)) seconds.delete(id); void flush(); } };
     const onPageHide = () => { void flush(true); };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);

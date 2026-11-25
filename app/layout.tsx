@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./workspace.css";
+import "./home.css";
 import "./focus-reader.css";
 import "./flashcard.css";
 import "./management-pages.css";

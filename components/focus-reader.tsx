@@ -25,7 +25,7 @@ const options = [
   { key: "width", label: "正文宽度", values: [["narrow", "窄"], ["standard", "标准"], ["wide", "宽"]] },
 ] as const;
 
-export function FocusReader({ topic, category, sections, points, notes, userId, initialPointId, preferences, onPreferencesChange, onBack, onExit }: {
+export function FocusReader({ topic, category, sections, points, notes, userId, initialPointId, preferences, onPreferencesChange, onBack, backLabel = "知识库", onExit }: {
   topic: Topic;
   category: string;
   sections: KnowledgePoint[];
@@ -36,6 +36,7 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
   preferences: ReaderPreferences;
   onPreferencesChange: (next: ReaderPreferences) => void;
   onBack: () => void;
+  backLabel?: string;
   onExit: (pointId: string | null) => void;
 }) {
   const [tocOpen, setTocOpen] = useState(false);
@@ -140,7 +141,7 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
 
   return <div className={`focus-reader focus-size-${preferences.size} focus-leading-${preferences.leading} focus-bg-${preferences.background} focus-width-${preferences.width}`}>
     <header className="focus-header">
-      <div className="focus-header-inner"><button className="focus-back" onClick={onBack}>← <span>返回知识库</span></button><span className="focus-breadcrumb">{category} / {topic.title}</span><div className="focus-tools"><button onClick={() => { setTocOpen(value => !value); setSettingsOpen(false); }} aria-expanded={tocOpen}>目录</button><button onClick={() => { setSettingsOpen(value => !value); setTocOpen(false); }} aria-expanded={settingsOpen}>阅读设置</button><button onClick={() => onExit(activeId)}>退出专注</button></div></div>
+      <div className="focus-header-inner"><button className="focus-back" onClick={onBack}>← <span>返回{backLabel}</span></button><span className="focus-breadcrumb">{category} / {topic.title}</span><div className="focus-tools"><button onClick={() => { setTocOpen(value => !value); setSettingsOpen(false); }} aria-expanded={tocOpen}>目录</button><button onClick={() => { setSettingsOpen(value => !value); setTocOpen(false); }} aria-expanded={settingsOpen}>阅读设置</button><button onClick={() => onExit(activeId)}>退出专注</button></div></div>
       <div className="focus-progress-track" role="progressbar" aria-label="阅读进度" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${progress}%` }} /></div>
     </header>
 

@@ -18,6 +18,7 @@ export function recommendPoints(
   avoidIds: string[] = [],
   now = Date.now(),
   random = Math.random,
+  explorePercent = 20,
 ): PointRecommendation[] {
   const avoid = new Set(avoidIds);
   const eligible = points.filter(point => {
@@ -25,9 +26,13 @@ export function recommendPoints(
     return !avoid.has(point.id) && (!activity?.excluded_until || Date.parse(activity.excluded_until) <= now);
   });
   const shuffle = <T,>(items: T[]) => items.map(value => ({ value, order: random() })).sort((a, b) => a.order - b.order).map(item => item.value);
-  const unread = shuffle(eligible.filter(point => !activities[point.id]?.view_count));
+  const unread = shuffle(eligible.filter(point => !activities[point.id]?.view_count)).sort((a, b) => Number(!!activities[b.id]?.is_favorite) - Number(!!activities[a.id]?.is_favorite));
   const visited = eligible.filter(point => (activities[point.id]?.view_count || 0) > 0);
-  const revisit = shuffle(visited).sort((a, b) => {
+  const longUnread = visited.filter(point => {
+    const lastViewed = Date.parse(activities[point.id]?.last_viewed_at || "");
+    return !Number.isFinite(lastViewed) || now - lastViewed >= 7 * 86400000;
+  });
+  const revisit = shuffle(longUnread).sort((a, b) => {
     const score = (point: PointCandidate) => {
       const activity = activities[point.id];
       const days = Math.max(0, (now - Date.parse(activity.last_viewed_at || "")) / 86400000);
@@ -35,7 +40,7 @@ export function recommendPoints(
       const frequency = 1 / Math.sqrt(Math.max(1, activity.view_count));
       const cardDays = activity.last_card_seen_at ? Math.max(0, (now - Date.parse(activity.last_card_seen_at)) / 86400000) : 30;
       const novelty = Math.min(cardDays / 14, 1);
-      return .45 * recency + .35 * frequency + .20 * novelty + (activity.is_favorite ? .05 : 0);
+      return .45 * recency + .35 * frequency + .20 * novelty + (activity.is_favorite ? .15 : 0);
     };
     return score(b) - score(a);
   });
@@ -52,11 +57,15 @@ export function recommendPoints(
       amount -= 1;
     }
   };
-  const unreadTarget = Math.round(count * .4);
-  const revisitTarget = Math.round(count * .4);
+  const exploreTarget = Math.round(count * Math.max(0, Math.min(100, explorePercent)) / 100);
+  const unreadTarget = Math.ceil((count - exploreTarget) / 2);
+  const revisitTarget = count - exploreTarget - unreadTarget;
   take(unread, "unread", unreadTarget);
   take(revisit, "revisit", revisitTarget);
-  take(shuffle(eligible), "explore", count - result.length);
+  take(shuffle(eligible), "explore", exploreTarget);
+  if (result.length < count) take(unread, "unread", count - result.length);
+  if (result.length < count) take(revisit, "revisit", count - result.length);
+  if (result.length < count) take(shuffle(eligible), "explore", count - result.length);
   if (result.length < count) {
     const fallback = shuffle(points.filter(point => {
       const activity = activities[point.id];

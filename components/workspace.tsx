@@ -18,8 +18,13 @@ import { reviewableDrafts } from "@/lib/topic-workflow";
 import { recommendPoints, type PointActivity, type PointCandidate, type PointRecommendation } from "@/lib/point-recommendations";
 import { CasualCards } from "@/components/casual-cards";
 import { ReadingActivityTracker } from "@/components/reading-activity-tracker";
+import { readRecommendationHistory, recentRecommendationIds, rememberRecommendations, saveRecommendationHistory } from "@/lib/recommendation-history";
+import { defaultRecommendationPreferences, preferredPoints, type RecommendationPreferences } from "@/lib/recommendation-preferences";
+import { RecommendationSettings } from "@/components/recommendation-settings";
+import { categoryCoverage } from "@/lib/category-coverage";
+import { FavoritesPanel } from "@/components/favorites-panel";
 
-type View = "home" | "library" | "notes" | "drafts" | "create" | "reader" | "browse";
+type View = "home" | "library" | "favorites" | "notes" | "drafts" | "create" | "reader" | "browse";
 type PointsLoad = { topicId: string | null; status: "idle" | "loading" | "loaded" | "error" };
 type TopicInsight = { pointCount: number; verifiedCount: number; ratedCount: number; masteredCount: number; weakCount: number; viewedCount: number; lastViewedAt: string | null; lastReviewedAt: string | null };
 type SearchPoint = PointCandidate;
@@ -32,10 +37,12 @@ function chooseRandomTopic(topics: Topic[], previousId: string | null): Topic | 
 
 export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [user, setUser] = useState<User | null>(null);
+  const currentUserId = user?.id;
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const authUserIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [view, setView] = useState<View>(initialTopicId ? "reader" : "home");
+  const [readerReturnView, setReaderReturnView] = useState<"library" | "favorites" | "drafts">("library");
   const [topics, setTopics] = useState<Topic[]>([]);
   const [topicsLoad, setTopicsLoad] = useState<"loading" | "loaded" | "error">("loading");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
@@ -46,6 +53,10 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [searchPoints, setSearchPoints] = useState<SearchPoint[]>([]);
   const [pointActivity, setPointActivity] = useState<Record<string, PointActivity>>({});
   const [recommendations, setRecommendations] = useState<PointRecommendation[]>([]);
+  const [recommendationPreferences, setRecommendationPreferences] = useState<RecommendationPreferences>(defaultRecommendationPreferences);
+  const [recommendationPreferencesReady, setRecommendationPreferencesReady] = useState(false);
+  const [recommendationSettingsOpen, setRecommendationSettingsOpen] = useState(false);
+  const recommendedPoolSignature = useRef("");
   const completedJobsRef = useRef("");
   const [categories, setCategories] = useState<Category[]>([]);
   const [points, setPoints] = useState<KnowledgePoint[]>([]);
@@ -197,6 +208,10 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         setInsightsStatus("loading");
         setSearchPoints([]);
         setPointActivity({});
+        setRecommendations([]);
+        setRecommendationPreferences(defaultRecommendationPreferences);
+        setRecommendationPreferencesReady(false);
+        recommendedPoolSignature.current = "";
         completedJobsRef.current = "";
         setPoints([]);
         setReviewsReady(false);
@@ -235,6 +250,17 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   useEffect(() => () => { if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current); }, []);
   useEffect(() => { if (user) { void Promise.resolve().then(load); } }, [user, load]);
   useEffect(() => { if (user) { void Promise.resolve().then(loadInsights); } }, [user, loadInsights]);
+  useEffect(() => {
+    if (!db || !currentUserId) return;
+    let cancelled = false;
+    void db.from("user_recommendation_preferences").select("category_ids,random_percent").eq("user_id", currentUserId).maybeSingle().then(({ data, error: loadError }) => {
+      if (cancelled) return;
+      if (loadError) setError(`推荐偏好加载失败，请执行最新数据库迁移：${loadError.message}`);
+      setRecommendationPreferences(data ? { category_ids: data.category_ids, random_percent: data.random_percent } : defaultRecommendationPreferences);
+      setRecommendationPreferencesReady(true);
+    });
+    return () => { cancelled = true; };
+  }, [currentUserId]);
   useEffect(() => {
     if (!user || isAdmin !== true) return;
     void Promise.resolve().then(loadJobs);
@@ -303,6 +329,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   }, []);
 
   const selected = topics.find(topic => topic.id === selectedId);
+  const effectiveReaderReturnView = readerReturnView === "library" && selected?.status === "draft" ? "drafts" : readerReturnView;
   const publishedTopics = topics.filter(topic => topic.status === "published");
   const draftTopics = isAdmin ? reviewableDrafts(topics, jobs, jobsLoaded) : [];
   const sections = points.filter(point => !point.parent_id);
@@ -322,9 +349,45 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     const publishedIds = new Set(topics.filter(topic => topic.status === "published").map(topic => topic.id));
     return searchPoints.filter(point => publishedIds.has(point.topic_id));
   }, [searchPoints, topics]);
+  const favoriteCount = searchPoints.filter(point => pointActivity[point.id]?.is_favorite).length;
+  const preferredRecommendationPool = useMemo(() => preferredPoints(recommendationPool, publishedTopics, categories, recommendationPreferences.category_ids), [recommendationPool, publishedTopics, categories, recommendationPreferences.category_ids]);
+  const recommendationUserId = currentUserId;
+  const showRecommendations = useCallback((pool: PointCandidate[], activities: Record<string, PointActivity>, userId: string) => {
+    const key = `im:recommendations:${userId}`;
+    const history = readRecommendationHistory(key);
+    const avoid = recentRecommendationIds(history, pool.map(point => point.id), 3);
+    const next = recommendPoints(pool, activities, 3, avoid, Date.now(), Math.random, recommendationPreferences.random_percent);
+    saveRecommendationHistory(key, rememberRecommendations(history, next.map(point => point.id)));
+    setRecommendations(next);
+  }, [recommendationPreferences.random_percent]);
   useEffect(() => {
-    queueMicrotask(() => setRecommendations(recommendPoints(recommendationPool, pointActivity, 3)));
-  }, [recommendationPool, pointActivity]);
+    if (!recommendationUserId || insightsStatus !== "loaded" || !recommendationPreferencesReady) return;
+    const signature = `${recommendationUserId}:${recommendationPreferences.random_percent}:${preferredRecommendationPool.map(point => point.id).join(",")}`;
+    if (recommendedPoolSignature.current === signature) return;
+    recommendedPoolSignature.current = signature;
+    queueMicrotask(() => showRecommendations(preferredRecommendationPool, activityRef.current, recommendationUserId));
+  }, [preferredRecommendationPool, insightsStatus, recommendationUserId, recommendationPreferencesReady, recommendationPreferences.random_percent, showRecommendations]);
+  async function saveRecommendationPreferences(next: RecommendationPreferences) {
+    if (!db || !user) return false;
+    const { error: saveError } = await db.from("user_recommendation_preferences").upsert({ user_id: user.id, ...next, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    if (saveError) { setError(`推荐偏好保存失败：${saveError.message}`); return false; }
+    setRecommendationPreferences(next);
+    return true;
+  }
+  async function setPointControl(id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") {
+    if (!db) return false;
+    const { error: saveError } = await db.rpc("set_point_recommendation_control", { p_point_id: id, p_action: action });
+    if (saveError) { setError(`推荐设置保存失败：${saveError.message}`); return false; }
+    const previous = activityRef.current[id];
+    const next: PointActivity = { knowledge_point_id: id, view_count: previous?.view_count || 0, reading_seconds: previous?.reading_seconds || 0,
+      last_viewed_at: previous?.last_viewed_at || null, card_seen_count: previous?.card_seen_count || 0, last_card_seen_at: previous?.last_card_seen_at || null,
+      is_favorite: action === "favorite" ? true : action === "unfavorite" ? false : previous?.is_favorite || false,
+      excluded_until: action === "exclude" ? new Date(Date.now() + 7 * 86400000).toISOString() : action === "restore" ? null : previous?.excluded_until || null };
+    activityRef.current = { ...activityRef.current, [id]: next };
+    setPointActivity(activityRef.current);
+    if (action === "exclude" && user) showRecommendations(preferredRecommendationPool, activityRef.current, user.id);
+    return true;
+  }
   async function rateCard(pointId: string, level: ReviewLevel): Promise<ReviewUndo | null> {
     if (!db || !user) return null;
     const previous = reviewProgress[pointId] || null;
@@ -358,6 +421,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const categoryName = (id: string | null) => id ? categoryPathById.get(id) || "未分类" : "未分类";
 
   function openTopic(id: string, pointId?: string, chapterId?: string) {
+    setReaderReturnView(view === "favorites" ? "favorites" : topics.find(topic => topic.id === id)?.status === "draft" ? "drafts" : "library");
     pendingReadTargetId.current = chapterId ? `section-${chapterId}` : pointId ? `point-${pointId}` : null;
     selectedIdRef.current = id;
     setSelectedId(id); setView("reader"); setMode("read");
@@ -547,6 +611,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         <button className={view === "home" ? "active" : ""} onClick={() => navigate("home")}><span>⌂</span>学习首页</button>
         <button className={view === "browse" ? "active" : ""} onClick={() => navigate("browse")}><span>◈</span>随便看看</button>
         <button className={view === "library" || (view === "reader" && selected?.status === "published") ? "active" : ""} onClick={() => navigate("library")}><span>▤</span>我的知识库</button>
+        <button className={view === "favorites" ? "active" : ""} onClick={() => navigate("favorites")}><span>☆</span>我的收藏{favoriteCount > 0 && <small>{favoriteCount}</small>}</button>
         <button className={view === "notes" ? "active" : ""} onClick={() => navigate("notes")}><span>✎</span>我的笔记</button>
         {isAdmin && <button className={view === "drafts" || (view === "reader" && selected?.status === "draft") ? "active" : ""} onClick={() => navigate("drafts")}><span>▣</span>草稿箱 <small>{draftTopics.length}</small></button>}
         {isAdmin && <button className={view === "create" ? "active" : ""} onClick={() => navigate("create")}><span>✳</span>AI 创建专题</button>}
@@ -569,21 +634,22 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
             <section className="home-priority"><div className="section-header"><h2>随便看看</h2><span className="home-heading-meta">无需评分</span></div><div className="home-priority-panel review-panel"><strong>随机翻几张知识卡片</strong><p>想一想，再看参考内容。看完直接翻下一张，随时可以离开。</p><button className="home-priority-action" onClick={() => navigate("browse")}>开始随便看看 <span aria-hidden="true">→</span></button></div></section>
           </div>
           <div className="home-random-topic"><div><strong>随机查看专题</strong><p>想完整读一篇？从已发布的专题里随机挑一个。</p></div><button className="text-btn" disabled={!publishedTopics.length} onClick={openRandomTopic}>随机打开 →</button></div>
-          <section className="home-review-focus"><div className="section-header"><h2>为你推荐</h2><button className="text-btn" disabled={recommendationPool.length < 2} onClick={() => { setRecommendations(recommendPoints(recommendationPool, pointActivity, 3, recommendations.map(point => point.id))); }}>换一批 →</button></div>{insightsStatus === "loaded" ? recommendations.length ? <div className="home-review-list">{recommendations.map(point => { const topic = publishedTopics.find(item => item.id === point.topic_id); return <button key={point.id} onClick={() => openTopic(point.topic_id, point.id)}><span><strong>{point.title}</strong><small className="home-recommend-topic">{topic?.title || "专题"}</small><small>{topic ? categoryName(topic.category_id) : "未分类"} · {point.reason === "unread" ? "之前还未阅读" : point.reason === "revisit" ? "最近接触较少" : "换一个知识方向"}</small></span><span className="home-review-stats"><em>{point.reason === "unread" ? "还没看过" : point.reason === "revisit" ? "重新接触" : "随机探索"}</em></span><span aria-hidden="true">→</span></button>; })}</div> : <div className="empty">还没有可推荐的知识点。先发布一个专题吧。</div> : <div className="empty" role="status">{insightsStatus === "error" ? "推荐信息暂时无法加载，请刷新页面重试。" : "正在挑选知识点…"}</div>}</section>
+          <RecommendationSection points={recommendations} activities={pointActivity} topics={publishedTopics} categories={categories.filter(category => recommendationPreferences.category_ids.includes(category.id) || preferredPoints(recommendationPool, publishedTopics, categories, [category.id]).length > 0)} categoryName={categoryName} poolSize={preferredRecommendationPool.length} status={recommendationPreferencesReady ? insightsStatus : "loading"} settingsOpen={recommendationSettingsOpen} preferences={recommendationPreferences} onSettingsOpen={() => setRecommendationSettingsOpen(true)} onSettingsClose={() => setRecommendationSettingsOpen(false)} onSavePreferences={saveRecommendationPreferences} onMore={() => user && showRecommendations(preferredRecommendationPool, pointActivity, user.id)} onOpen={openTopic} onControl={setPointControl} />
           <div className="section-header"><h2>最近专题</h2><button className="text-btn" onClick={() => navigate("library")}>查看全部 →</button></div>
           {publishedTopics.length ? <div className="recent-list">{publishedTopics.slice(0, 4).map(topic => <TopicTile key={topic.id} topic={topic} category={categoryName(topic.category_id)} onOpen={() => openTopic(topic.id)} />)}</div> : <div className="empty">发布的专题会出现在这里。</div>}
         </div>{isAdmin && <aside className="home-aside"><h2>今日待处理</h2><p>从待审核内容继续整理，再回到知识库阅读。</p><button onClick={() => navigate("drafts")}><strong>{draftTopics.length}</strong><span>份待检查草稿</span><b>查看草稿 →</b></button><button onClick={() => setTaskDrawerOpen(true)}><strong>{jobs.filter(job => job.status === "pending" || job.status === "running").length}</strong><span>项生成任务</span><b>查看任务 →</b></button><button className="aside-create" onClick={() => navigate("create")}>＋ 创建知识专题</button></aside>}</div>
       </section>}
       {view === "library" && <LibraryPanel topics={publishedTopics} drafts={draftTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} searchPoints={searchPoints} query={query} categoryName={categoryName} canManage={isAdmin === true} userId={user.id} onCategoriesChanged={load} />}
+      {view === "favorites" && <FavoritesPanel points={searchPoints} activities={pointActivity} topics={topics} categories={categories} status={insightsStatus === "error" || topicsLoad === "error" ? "error" : insightsStatus === "loaded" && topicsLoad === "loaded" ? "loaded" : "loading"} categoryName={categoryName} onOpen={openTopic} onRemove={id => setPointControl(id, "unfavorite")} onBrowse={() => navigate("library")} />}
       {view === "notes" && <NotesPanel userId={user.id} topics={topics} categoryName={categoryName} onOpen={(topicId, chapterId) => openTopic(topicId, undefined, chapterId)} />}
-      {view === "browse" && (insightsStatus === "loaded" ? <CasualCards points={recommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} onSeen={onCardSeen} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
+      {view === "browse" && (insightsStatus === "loaded" && recommendationPreferencesReady ? <CasualCards userId={user.id} points={preferredRecommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} onSeen={onCardSeen} onControl={setPointControl} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
       {view === "drafts" && isAdmin && <DraftPanel topics={draftTopics} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} onOpen={openTopic} onCreate={() => navigate("create")} onDelete={topic => void deleteDraft(topic)} />}
       {view === "create" && isAdmin && <CreatePanel busy={busy} onGenerate={generate} onManual={createManual} />}
-      {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onBack={() => navigate("library")} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
+      {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
       {view === "reader" && focus && selected && pointsLoad.status !== "loaded" && (pointsLoad.status === "error" ? <div className="reader-load-error">专题内容加载失败。<button className="text-btn" onClick={() => setFocus(false)}>返回专题页</button></div> : <ReaderLoading full />)}
-      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(selected?.status === "draft" ? "drafts" : "library")}>← 返回{selected?.status === "draft" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑ 回到顶部</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
+      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑ 回到顶部</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
       {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
-    </main><nav className="mobile-nav" aria-label="手机导航"><button onClick={() => navigate("home")}>首页</button><button onClick={() => navigate("browse")}>随便看看</button><button onClick={() => navigate("library")}>知识库</button>{isAdmin && <button onClick={() => navigate("drafts")}>草稿</button>}{isAdmin && <button onClick={() => navigate("create")}>创建专题</button>}</nav>
+    </main><nav className="mobile-nav" aria-label="手机导航"><button onClick={() => navigate("home")}>首页</button><button onClick={() => navigate("browse")}>随便看看</button><button onClick={() => navigate("library")}>知识库</button><button onClick={() => navigate("favorites")}>收藏</button>{isAdmin && <button onClick={() => navigate("drafts")}>草稿</button>}{isAdmin && <button onClick={() => navigate("create")}>创建专题</button>}</nav>
     {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onDelete={id => { const topic = topics.find(item => item.id === id); if (topic) void deleteDraft(topic); }} retryingJobId={retryingJobId} />}
   </div>;
 }
@@ -657,6 +723,23 @@ function studyDate(value: string | null) {
   return `${date.toLocaleDateString("zh-CN")} 阅读`;
 }
 
+function RecommendationSection({ points, activities, topics, categories, categoryName, poolSize, status, settingsOpen, preferences, onSettingsOpen, onSettingsClose, onSavePreferences, onMore, onOpen, onControl }: {
+  points: PointRecommendation[]; activities: Record<string, PointActivity>; topics: Topic[]; categories: Category[];
+  categoryName: (id: string | null) => string; poolSize: number; status: "loading" | "loaded" | "error";
+  settingsOpen: boolean; preferences: RecommendationPreferences; onSettingsOpen: () => void; onSettingsClose: () => void;
+  onSavePreferences: (next: RecommendationPreferences) => Promise<boolean>; onMore: () => void;
+  onOpen: (topicId: string, pointId: string) => void; onControl: (id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") => Promise<boolean>;
+}) {
+  return <section className="home-review-focus"><div className="section-header"><h2>为你推荐</h2><div className="recommendation-heading-actions"><button className="text-btn" onClick={onSettingsOpen} aria-expanded={settingsOpen}>推荐设置</button><button className="text-btn" disabled={poolSize <= points.length} onClick={onMore}>换一批 →</button></div></div>
+    {settingsOpen && <RecommendationSettings categories={categories} preferences={preferences} onSave={onSavePreferences} onClose={onSettingsClose} />}
+    {status === "loaded" ? points.length ? <div className="home-review-list">{points.map(point => {
+      const topic = topics.find(item => item.id === point.topic_id);
+      const favorite = activities[point.id]?.is_favorite || false;
+      return <article className="recommendation-row" key={point.id}><button className="recommendation-open" onClick={() => onOpen(point.topic_id, point.id)}><span><strong>{point.title}</strong><small className="home-recommend-topic">{topic?.title || "专题"}</small><small>{topic ? categoryName(topic.category_id) : "未分类"} · {point.reason === "unread" ? "之前还未阅读" : point.reason === "revisit" ? "七天以上未读" : "随机探索"}</small></span><span className="home-review-stats"><em>{point.reason === "unread" ? "还没看过" : point.reason === "revisit" ? "重新接触" : "随机探索"}</em></span><span aria-hidden="true">→</span></button><div className="recommendation-controls"><button onClick={() => void onControl(point.id, favorite ? "unfavorite" : "favorite")} aria-pressed={favorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={() => void onControl(point.id, "exclude")}>暂不推荐 7 天</button></div></article>;
+    })}</div> : <div className="empty">所选分类还没有可推荐的知识点。可以调整推荐设置。</div> : <div className="empty" role="status">{status === "error" ? "推荐信息暂时无法加载，请刷新页面重试。" : "正在挑选知识点…"}</div>}
+  </section>;
+}
+
 function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, topicsStatus, searchPoints, query, categoryName, canManage, userId, onCategoriesChanged }: { topics: Topic[]; drafts: Topic[]; categories: Category[]; insights: Record<string, TopicInsight>; insightsStatus: "loading" | "loaded" | "error"; topicsStatus: "loading" | "loaded" | "error"; searchPoints: SearchPoint[]; query: string; categoryName: (id: string | null) => string; canManage: boolean; userId: string; onCategoriesChanged: () => Promise<void> }) {
   const [currentTime, setCurrentTime] = useState(0);
   useEffect(() => { queueMicrotask(() => setCurrentTime(Date.now())); }, []);
@@ -684,6 +767,7 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
     for (const id of ids.length ? ids : ["uncategorized"]) categoryCounts.set(id, (categoryCounts.get(id) || 0) + 1);
   }
   const availableCategories = categories.filter(category => categoryCounts.has(category.id));
+  const coverage = categoryCoverage(topics, categories, Object.fromEntries(Object.entries(insights).map(([id, insight]) => [id, { total: insight.pointCount, viewed: insight.viewedCount }])));
   const visible = topics.filter(topic => {
     const insight = insights[topic.id] || noInsight;
     const search = query.trim().toLocaleLowerCase();
@@ -707,6 +791,7 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
   return <section className="page-wrap management-page library-page"><div className="management-heading"><div><span className="eyebrow">知识资产</span><h1 className="page-title">我的知识库</h1><p>选择专题，在新标签页阅读；这里会保留筛选结果。</p></div><span className="management-count">{topics.length} 个专题</span></div>
     {topicsStatus === "loaded" && insightsStatus === "loaded" && (topics.length >= 2 || totalPoints >= 10) && <div className="library-overview"><div><strong>{topics.length}</strong><span>全部专题</span></div><div><strong>{totalPoints}</strong><span>知识点</span></div><div><strong>{viewedPoints}/{totalPoints}</strong><span>已浏览知识点</span></div></div>}
     <div className="library-categories"><div className="library-categories-heading"><strong>专题分类</strong>{canManage && <button type="button" onClick={() => setCategoriesOpen(value => !value)} aria-expanded={categoriesOpen}>管理分类</button>}</div><div className="library-category-tabs" role="group" aria-label="按专题分类筛选"><button type="button" className={categoryFilter === "all" ? "active" : ""} aria-pressed={categoryFilter === "all"} onClick={() => setCategoryFilter("all")}>全部 <span>{topics.length}</span></button>{availableCategories.map(category => <button type="button" key={category.id} className={categoryFilter === category.id ? "active" : ""} aria-pressed={categoryFilter === category.id} onClick={() => setCategoryFilter(category.id)}>{categoryName(category.id)} <span>{categoryCounts.get(category.id)}</span></button>)}{categoryCounts.has("uncategorized") && <button type="button" className={categoryFilter === "uncategorized" ? "active" : ""} aria-pressed={categoryFilter === "uncategorized"} onClick={() => setCategoryFilter("uncategorized")}>未分类 <span>{categoryCounts.get("uncategorized")}</span></button>}</div></div>
+    {insightsStatus === "loaded" && <section className="category-coverage" aria-label="分类阅读覆盖率"><h2>分类阅读覆盖率</h2><div className="category-coverage-grid">{[...availableCategories.map(category => ({ id: category.id, name: categoryName(category.id) })), ...(categoryCounts.has("uncategorized") ? [{ id: "uncategorized", name: "未分类" }] : [])].map(category => { const value = coverage[category.id] || { total: 0, viewed: 0 }; const percent = value.total ? Math.round(value.viewed / value.total * 100) : 0; return <div className="category-coverage-item" key={category.id}><div><strong>{category.name}</strong><span>{value.viewed}/{value.total} · {percent}%</span></div><div className="progress-track" role="progressbar" aria-label={`${category.name}阅读覆盖率`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div></div>; })}</div></section>}
     {canManage && categoriesOpen && <CategoryManager categories={categories} userId={userId} onSaved={onCategoriesChanged} onClose={() => setCategoriesOpen(false)} />}
     <div className="library-filters"><strong>专题筛选 <span>{visible.length}</span></strong><label>阅读情况<select aria-label="按阅读情况筛选专题" value={readingFilter} onChange={event => setReadingFilter(event.target.value)}><option value="all">全部状态</option><option value="unread">尚未阅读</option><option value="started">已开始阅读</option><option value="less">久未阅读</option></select></label><label>排序<select aria-label="专题排序" value={sort} onChange={event => setSort(event.target.value)}><option value="recent">最近阅读</option><option value="created">最近创建</option><option value="title">标题</option></select></label><button type="button" className="library-random-button" aria-label="从当前筛选结果中随机查看专题" title="随机查看当前列表中的专题" disabled={topicsStatus !== "loaded" || insightsStatus !== "loaded" || !visible.length} onClick={openRandomVisibleTopic}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"/></svg></button><div className="library-layout" role="group" aria-label="展示方式"><button className={layout === "list" ? "active" : ""} onClick={() => setLayout("list")}>列表</button><button className={layout === "grid" ? "active" : ""} onClick={() => setLayout("grid")}>卡片</button></div></div>
     {topicsStatus !== "loaded" || insightsStatus !== "loaded" ? <div className="management-empty" role="status">{topicsStatus === "error" || insightsStatus === "error" ? "专题或学习信息暂时无法加载，请刷新页面重试。" : "正在加载专题与学习信息…"}</div> : visible.length ? <div className={`library-list ${layout === "grid" ? "is-grid" : ""}`}>{visible.map(topic => {
@@ -741,8 +826,10 @@ function CreatePanel({ busy, onGenerate, onManual }: { busy: boolean; onGenerate
   return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入专题名称，AI 会自动选择分类，生成回答重点、必要原理和练习内容。完成后可在草稿箱检查。</p><form onSubmit={event => { event.preventDefault(); if (title.trim()) onGenerate(title.trim()); }}><label htmlFor="topic-title">专题名称</label><input id="topic-title" required maxLength={120} placeholder="例如：Redis 持久化机制" value={title} onChange={event => setTitle(event.target.value)} /><div className="generation-list"><span>生成内容</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={busy || !title.trim()}>{busy ? "正在提交任务…" : "AI 生成专题"}</button><button type="button" className="text-btn" disabled={busy || !title.trim()} onClick={() => onManual(title.trim())}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
 }
 
-function PointBlock({ point, mastery, canEdit, onSave, onVerify }: { point: KnowledgePoint; mastery: number; canEdit: boolean; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void }) {
+function PointBlock({ point, activity, mastery, canEdit, onSave, onVerify, onControl }: { point: KnowledgePoint; activity?: PointActivity; mastery: number; canEdit: boolean; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void; onControl: (id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") => Promise<boolean> }) {
   const [editing, setEditing] = useState(false);
+  const [mountedAt] = useState(() => Date.now());
+  const excluded = !!activity?.excluded_until && Date.parse(activity.excluded_until) > mountedAt;
   const [saving, setSaving] = useState(false);
   const [content, setContent] = useState(point.content_md || "");
   return <div className="point-block" id={`point-${point.id}`}>
@@ -754,7 +841,7 @@ function PointBlock({ point, mastery, canEdit, onSave, onVerify }: { point: Know
       {point.common_mistakes?.length > 0 && <div className="mistakes"><strong>易错点</strong><ul>{point.common_mistakes.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {point.key_takeaways?.length > 0 && <div className="takeaways"><strong>补充要点</strong><ul>{point.key_takeaways.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {point.interview_questions?.length > 0 && <details className="followups"><summary>面试追问（{point.interview_questions.length}）</summary><ul>{point.interview_questions.map((item, index) => <li key={index}>{item}</li>)}</ul></details>}
-      <div className="point-actions">{canEdit && <button className="edit-link" onClick={() => { setContent(point.content_md || ""); setEditing(true); }}>编辑知识点</button>}{canEdit && point.verification_status !== "verified" && <button className="verify-link" onClick={() => onVerify(point)}>标记已校验</button>}{mastery >= 3 && <span className="mastery-inline mastered">已掌握</span>}</div>
+      <div className="point-actions"><button onClick={() => void onControl(point.id, activity?.is_favorite ? "unfavorite" : "favorite")} aria-pressed={activity?.is_favorite || false}>{activity?.is_favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={() => void onControl(point.id, excluded ? "restore" : "exclude")}>{excluded ? "恢复推荐" : "暂不推荐 7 天"}</button>{canEdit && <button className="edit-link" onClick={() => { setContent(point.content_md || ""); setEditing(true); }}>编辑知识点</button>}{canEdit && point.verification_status !== "verified" && <button className="verify-link" onClick={() => onVerify(point)}>标记已校验</button>}{mastery >= 3 && <span className="mastery-inline mastered">已掌握</span>}</div>
     </>}
   </div>;
 }
