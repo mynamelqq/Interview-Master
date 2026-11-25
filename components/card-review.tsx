@@ -25,7 +25,7 @@ export function CardReview({ topic, category, sections, points, notes, progress,
   progress: Record<string, ReviewProgress>;
   preferences: ReaderPreferences;
   onPreferencesChange: (next: ReaderPreferences) => void;
-  onSaveNote: (pointId: string, content: string) => Promise<boolean>;
+  onSaveNote: (sectionId: string, content: string) => Promise<boolean>;
   onRate: (pointId: string, level: ReviewLevel) => Promise<ReviewUndo | null>;
   onUndo: (undo: ReviewUndo) => Promise<boolean>;
   onExit: (pointId: string | null) => void;
@@ -50,11 +50,11 @@ export function CardReview({ topic, category, sections, points, notes, progress,
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setNoteDraft(currentId ? notes[currentId] || "" : "");
+      setNoteDraft(current?.parent_id ? notes[current.parent_id] || "" : "");
       setNoteOpen(false);
     });
     return () => { cancelled = true; };
-  }, [currentId, notes]);
+  }, [currentId, current?.parent_id, notes]);
 
   function moveTo(next: number) {
     setPosition(next);
@@ -122,7 +122,7 @@ export function CardReview({ topic, category, sections, points, notes, progress,
         <div className="card-progress" role="progressbar" aria-label="复习进度" aria-valuenow={position + 1} aria-valuemin={1} aria-valuemax={order.length}><span style={{ width: `${((position + 1) / order.length) * 100}%` }} /></div>
         <div className="card-question"><p className="card-prompt">先独立回忆，再查看参考内容</p><h2>{current.title}</h2><div className="card-recall"><strong>先想一想</strong><p>{content.prompt || `尝试解释「${current.title}」的原理、适用场景和关键取舍。`}</p></div>{!shown && <button className="card-reveal" onClick={() => setShown(true)}>显示参考内容</button>}</div>
         {shown && <><div className="card-answer"><div className="card-section-label">参考内容</div><MarkdownContent content={content.reference || "暂无参考内容"} prose />{current.key_takeaways?.length > 0 && <div className="card-detail"><strong>核心结论与补充要点</strong><ul>{current.key_takeaways.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}{current.example_md && <div className="card-detail"><strong>代码或配置示例</strong><MarkdownContent content={current.example_md} /></div>}{current.common_mistakes?.length > 0 && <div className="card-detail"><strong>易错点</strong><ul>{current.common_mistakes.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}{current.interview_questions?.length > 0 && <div className="card-detail"><strong>面试追问</strong><ul>{current.interview_questions.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}</div>
-          <div className="card-note"><button onClick={() => setNoteOpen(value => !value)} aria-expanded={noteOpen}>我的补充笔记 {notes[current.id] ? "· 已记录" : ""}</button>{noteOpen && <><textarea aria-label="我的补充笔记" rows={4} placeholder="记录刚才遗漏或容易混淆的内容…" value={noteDraft} onChange={event => setNoteDraft(event.target.value)} /><button className="card-note-save" disabled={saving} onClick={async () => { setSaving(true); try { if (await onSaveNote(current.id, noteDraft)) setNoteOpen(false); } finally { setSaving(false); } }}>保存笔记</button></>}</div>
+          <div className="card-note"><button onClick={() => setNoteOpen(value => !value)} aria-expanded={noteOpen}>本章笔记 {current.parent_id && notes[current.parent_id] ? "· 已记录" : ""}</button>{noteOpen && <><textarea aria-label="本章笔记" rows={4} placeholder="记录这一章容易遗漏或混淆的内容…" value={noteDraft} onChange={event => setNoteDraft(event.target.value)} /><button className="card-note-save" disabled={saving || !current.parent_id} onClick={async () => { if (!current.parent_id) return; setSaving(true); try { if (await onSaveNote(current.parent_id, noteDraft)) setNoteOpen(false); } finally { setSaving(false); } }}>保存笔记</button></>}</div>
           <div className="card-review"><div className="card-section-label">这次掌握得怎么样？</div><div className="card-ratings">{ratings.map((label, index) => <button key={label} disabled={saving} onClick={() => void rate((index + 1) as ReviewLevel)}><kbd>{index + 1}</kbd>{label}</button>)}</div></div></>}
         <div className="card-controls"><button disabled={position === 0 || saving} onClick={() => moveTo(position - 1)}>← 上一个</button><span>Space 看答案 · 1–4 评分 · ← → 切换</span><div><button disabled={saving} onClick={laterReview}>稍后复习</button><button disabled={saving} onClick={advance}>跳过本题</button><button disabled={saving} onClick={advance}>下一个 →</button></div></div>
       </div> : <div className="flashcard card-done"><h2>当前没有到期的知识点</h2><p>已评分的知识点会按下次复习时间重新出现。也可以提前复习全部内容。</p><button onClick={() => { setOrder(points.map(point => point.id)); moveTo(0); }}>提前复习全部</button><button onClick={() => onExit(null)}>返回专题</button></div>}

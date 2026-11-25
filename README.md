@@ -4,7 +4,7 @@ AI 技术面试知识库的首条垂直链路：注册登录与邮箱确认 → 
 
 ## 本地启动
 
-1. 在 Supabase 创建项目，打开 SQL Editor，按顺序执行 [`202611240001_init.sql`](supabase/migrations/202611240001_init.sql)、[`202611240002_default_categories.sql`](supabase/migrations/202611240002_default_categories.sql)、[`202611250001_point_activity.sql`](supabase/migrations/202611250001_point_activity.sql) 和 [`202611250002_admin_readers.sql`](supabase/migrations/202611250002_admin_readers.sql)。已有项目执行尚未运行的迁移。第四份迁移把执行时已有的账号设为管理员；之后注册的账号默认为普通用户。执行前请确认现有账号均应获得管理员权限。
+1. 在 Supabase 创建项目，打开 SQL Editor，按文件名顺序执行 `supabase/migrations/` 中的 SQL 文件。已有项目只执行尚未运行的迁移。`202611250005_chapter_notes.sql` 会把原来按知识点保存的笔记合并到对应章节，并保留知识点标题。`202611250002_admin_readers.sql` 会把执行时已有的账号设为管理员；之后注册的账号默认为普通用户，执行前请确认现有账号均应获得管理员权限。
 2. 复制 `.env.example` 为 `.env.local`，填写 Supabase Project URL、publishable/anon key，以及支持 OpenAI Chat Completions JSON mode 的 AI 服务地址、模型名和密钥。`AI_API_KEY` 只在服务端使用。
 3. 运行 `npm install` 和 `npm run dev`，打开 `http://localhost:3000`。在 Supabase Auth 设置中配置邮件确认与站点 URL。
 

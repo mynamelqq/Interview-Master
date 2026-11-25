@@ -45,6 +45,16 @@
 .management-heading p { margin: 10px 0 0; color: #64748b; font-size: 14px; line-height: 1.6; }
 .management-count { padding-bottom: 3px; color: #64748b; font-size: 13px; white-space: nowrap; }
 .management-heading .primary-btn { min-height: 40px; padding: 9px 15px; white-space: nowrap; }
+.notes-search { display: grid; gap: 7px; max-width: 420px; margin: 30px 0 18px; color: #64748b; font-size: 12px; }
+.notes-search input { min-height: 42px; padding: 9px 12px; border: 1px solid #dfe6ee; border-radius: 7px; background: #fff; color: #334155; font-size: 13px; }
+.notes-list { display: grid; gap: 14px; margin-top: 28px; }
+.notes-search + .notes-list { margin-top: 0; }
+.notes-item { min-width: 0; padding: 22px 25px; border: 1px solid #e0e6ee; border-radius: 10px; background: #fff; }
+.notes-item-head { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
+.notes-item-head h2 { margin: 10px 0 5px; color: #202938; font-size: 18px; }
+.notes-item-head p { margin: 0; color: #8793a3; font-size: 12px; }
+.notes-item-head button { flex: none; padding: 7px 0; border: 0; background: none; color: #286bd4; font-size: 12px; font-weight: 700; cursor: pointer; }
+.notes-item .markdown { margin-top: 18px; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
 .library-overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; margin-top: 34px; padding: 22px 0; border-top: 1px solid #e0e6ee; border-bottom: 1px solid #e0e6ee; }
 .library-overview > div { display: flex; flex-direction: column; gap: 4px; }
 .library-overview strong { color: #202938; font-size: 25px; font-weight: 650; line-height: 1.2; }
