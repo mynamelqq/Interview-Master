@@ -11,6 +11,7 @@ import { TopicAnswerFocus } from "@/components/topic-answer-focus";
 import { readTopicAnswer } from "@/lib/topic-answer";
 import { categoryPaths } from "@/lib/category-match";
 import { CategoryManager } from "@/components/category-manager";
+import { TopicCategoryEditor } from "@/components/topic-category-editor";
 import { NotesPanel } from "@/components/notes-panel";
 import { scheduleReview, type ReviewLevel, type ReviewProgress, type ReviewUndo } from "@/lib/review-schedule";
 import { CardReview } from "@/components/card-review";
@@ -33,6 +34,22 @@ type PointsLoad = { topicId: string | null; status: "idle" | "loading" | "loaded
 type TopicInsight = { pointCount: number; verifiedCount: number; ratedCount: number; masteredCount: number; weakCount: number; viewedCount: number; lastViewedAt: string | null; lastReviewedAt: string | null };
 type SearchPoint = PointCandidate;
 const db = getBrowserClient();
+const LIBRARY_BATCH_SIZE = 24;
+
+function saveLibraryScope(userId: string, ids: string[]): string {
+  const key = crypto.randomUUID();
+  window.localStorage.setItem(`im:library-scope:${userId}:${key}`, JSON.stringify(ids));
+  return key;
+}
+
+function readLibraryScope(userId: string): string[] {
+  const key = new URLSearchParams(window.location.search).get("scope");
+  if (!key) return [];
+  try {
+    const ids: unknown = JSON.parse(window.localStorage.getItem(`im:library-scope:${userId}:${key}`) || "[]");
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string").slice(0, 500) : [];
+  } catch { return []; }
+}
 
 class SessionExpiredError extends Error {
   constructor() { super("登录已过期，请重新登录"); }
@@ -78,6 +95,9 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [view, setView] = useState<View>(initialTopicId ? "reader" : "home");
   const [readerReturnView, setReaderReturnView] = useState<"library" | "favorites" | "drafts">("library");
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [readerTopicIds, setReaderTopicIds] = useState<string[] | null>(null);
+  const initialReaderScopeActive = useRef(!!initialTopicId);
+  const initialReaderScopeIds = useRef<string[] | null>(null);
   const [topicsLoad, setTopicsLoad] = useState<"loading" | "loaded" | "error">("loading");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
   const [modelGroups, setModelGroups] = useState<AiModelGroup[]>([]);
@@ -202,8 +222,12 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       setTopicsLoad("loaded");
       return;
     }
+    if (initialReaderScopeActive.current && !initialReaderScopeIds.current && initialTopicId) {
+      initialReaderScopeIds.current = [...new Set([...readLibraryScope(currentUserId || ""), initialTopicId])];
+    }
+    const scopedIds = initialReaderScopeActive.current ? initialReaderScopeIds.current : null;
     const [topicResult, categoryResult] = await Promise.all([
-      db.from("topics").select("*").order("created_at", { ascending: false }),
+      scopedIds ? db.from("topics").select("*").in("id", scopedIds).order("created_at", { ascending: false }) : db.from("topics").select("*").order("created_at", { ascending: false }),
       db.from("categories").select("*").order("sort_order").order("name"),
     ]);
     if (topicResult.error) {
@@ -211,14 +235,15 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       if (saved.length) { setOfflineTopics(saved); setTopics(saved.map(item => item.topic)); setTopicsLoad("loaded"); }
       else { setError(topicResult.error.message); setTopicsLoad("error"); }
     }
-    else { setTopics(topicResult.data as Topic[]); setTopicsLoad("loaded"); }
+    else { setTopics(topicResult.data as Topic[]); setReaderTopicIds(scopedIds); setTopicsLoad("loaded"); }
     if (!categoryResult.error) setCategories(categoryResult.data as Category[]);
-  }, [currentUserId]);
+  }, [currentUserId, initialTopicId]);
   const loadJobs = useCallback(async () => {
     if (!db) return;
     const rows: GenerationJob[] = [];
     for (let start = 0; ; start += 100) {
-      const { data, error: jobsError } = await db.from("topic_generation_jobs").select("id,topic_id,input_title,status,raw_output,error_message,created_at,finished_at").order("created_at", { ascending: false }).range(start, start + 99);
+      const jobsQuery = db.from("topic_generation_jobs").select("id,topic_id,input_title,status,raw_output,error_message,created_at,finished_at").order("created_at", { ascending: false });
+      const { data, error: jobsError } = await (initialReaderScopeActive.current && selectedId ? jobsQuery.eq("topic_id", selectedId) : jobsQuery).range(start, start + 99);
       if (jobsError) { setError(jobsError.message); setJobsLoaded(true); return; }
       rows.push(...(data as GenerationJob[] || []));
       if (!data || data.length < 100) break;
@@ -234,7 +259,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     const completedSignature = rows.filter(job => job.status === "completed").map(job => job.id).sort().join(",");
     if (completedSignature !== completedJobsRef.current) {
       completedJobsRef.current = completedSignature;
-      await loadInsights();
+      if (!initialReaderScopeActive.current) await loadInsights();
     }
     if (selectedId && rows.some(job => job.topic_id === selectedId && job.status === "completed")) {
       const { data: latestPoints } = await db.from("knowledge_points").select("*").eq("topic_id", selectedId).order("sort_order");
@@ -309,7 +334,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   }, []);
   useEffect(() => {
     if (!user || offline) return;
-    const refresh = () => { void load(); void loadInsights(); };
+    const refresh = () => { void load(); if (!initialReaderScopeActive.current) void loadInsights(); };
     window.addEventListener("online", refresh);
     return () => window.removeEventListener("online", refresh);
   }, [user, offline, load, loadInsights]);
@@ -363,7 +388,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   }, [mobileNavOpen]);
   useEffect(() => { if (user) { void Promise.resolve().then(load); } }, [user, load]);
   useEffect(() => { if (user && offline) { void Promise.resolve().then(load); } }, [user, offline, load]);
-  useEffect(() => { if (user && !offline) { void Promise.resolve().then(loadInsights); } }, [user, offline, loadInsights]);
+  useEffect(() => { if (user && !offline && !initialTopicId) { void Promise.resolve().then(loadInsights); } }, [user, offline, initialTopicId, loadInsights]);
   useEffect(() => {
     if (!db || !currentUserId) return;
     if (offline) { queueMicrotask(() => { setRecommendationPreferencesReady(true); setRecommendationPreferences(defaultRecommendationPreferences); }); return; }
@@ -675,6 +700,17 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     setView(next); setError(""); setFocus(false); setMobileNavOpen(false);
     setReadingNavOpen(false);
     window.history.pushState({}, "", "/");
+    if (initialReaderScopeActive.current) { initialReaderScopeActive.current = false; setReaderTopicIds(null); void loadAllTopics(); }
+  }
+  async function loadAllTopics() {
+    if (!db) return;
+    setTopicsLoad("loading");
+    setInsightsStatus("loading");
+    const { data, error: loadError } = await db.from("topics").select("*").order("created_at", { ascending: false });
+    if (loadError) { setTopicsLoad("error"); setError(loadError.message); return; }
+    setTopics(data as Topic[]);
+    setTopicsLoad("loaded");
+    await loadInsights();
   }
   function changeReaderPreferences(next: ReaderPreferences) {
     setReaderPreferences(next);
@@ -761,6 +797,22 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     setNotes(previous => ({ ...previous, [sectionId]: content }));
     return true;
   }
+  async function updateTopicCategory(categoryId: string | null) {
+    if (!db || !user || isAdmin !== true || !selected || offline) return false;
+    if (categoryId && !categories.some(category => category.id === categoryId && category.user_id === user.id)) return false;
+    const { data, error: saveError } = await db.from("topics")
+      .update({ category_id: categoryId })
+      .eq("id", selected.id)
+      .eq("user_id", user.id)
+      .select("id,category_id")
+      .maybeSingle();
+    if (saveError || !data) {
+      setError(saveError?.message || "专题分类未能保存，请刷新后重试。");
+      return false;
+    }
+    setTopics(previous => previous.map(topic => topic.id === data.id ? { ...topic, category_id: data.category_id } : topic));
+    return true;
+  }
   async function publish() {
     if (!db || isAdmin !== true || !selected) return;
     const generationJob = jobs.find(job => job.topic_id === selected.id);
@@ -841,7 +893,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
           {publishedTopics.length ? <div className="recent-list">{publishedTopics.slice(0, 4).map(topic => <TopicTile key={topic.id} topic={topic} category={categoryName(topic.category_id)} onOpen={() => openTopic(topic.id)} />)}</div> : <div className="empty">发布的专题会出现在这里。</div>}
         </div>{isAdmin && <aside className="home-aside"><h2>今日待处理</h2><p>从待审核内容继续整理，再回到知识库阅读。</p><button onClick={() => navigate("drafts")}><strong>{draftTopics.length}</strong><span>份待检查草稿</span><b>查看草稿 →</b></button><button onClick={() => setTaskDrawerOpen(true)}><strong>{jobs.filter(job => job.status === "pending" || job.status === "running").length}</strong><span>项生成任务</span><b>查看任务 →</b></button><button className="aside-create" onClick={() => navigate("create")}>＋ 创建知识专题</button></aside>}</div>
       </section>}
-      {view === "library" && <LibraryPanel topics={publishedTopics} drafts={draftTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} searchPoints={searchPoints} query={query} categoryName={categoryName} canManage={isAdmin === true} userId={user.id} onCategoriesChanged={load} onOpen={id => openTopic(id)} />}
+      {view === "library" && <LibraryPanel topics={publishedTopics} drafts={draftTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} searchPoints={searchPoints} query={query} categoryName={categoryName} canManage={isAdmin === true} userId={user.id} onCategoriesChanged={load} onOpen={(id, ids) => { setReaderTopicIds(ids); openTopic(id); }} />}
       {view === "favorites" && <FavoritesPanel points={searchPoints} activities={pointActivity} topics={topics} categories={categories} status={insightsStatus === "error" || topicsLoad === "error" ? "error" : insightsStatus === "loaded" && topicsLoad === "loaded" ? "loaded" : "loading"} categoryName={categoryName} onOpen={openTopic} onRemove={id => setPointControl(id, "unfavorite")} onBrowse={() => navigate("library")} />}
       {view === "notes" && <NotesPanel userId={user.id} topics={topics} categoryName={categoryName} onOpen={(topicId, chapterId) => openTopic(topicId, undefined, chapterId)} />}
       {view === "browse" && (insightsStatus === "loaded" && recommendationPreferencesReady ? <CasualCards userId={user.id} points={preferredRecommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} offline={offline} onSeen={onCardSeen} onControl={setPointControl} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
@@ -850,7 +902,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       {view === "create" && isAdmin && <CreatePanel busy={busy} groups={modelGroups} groupsStatus={modelGroupsStatus} selectedGroupId={selectedModelGroupId} onSelectGroup={selectModelGroup} onSaveGroup={saveModelGroup} onGenerate={generate} onManual={createManual} />}
       {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} savedOffline={offlineTopics.some(item => item.topic.id === selected.id)} onToggleOffline={() => void toggleOfflineTopic()} onOpenMenu={() => setMobileNavOpen(true)} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
       {view === "reader" && focus && selected && pointsLoad.status !== "loaded" && (pointsLoad.status === "error" ? <div className="reader-load-error">专题内容加载失败。<button className="text-btn" onClick={() => setFocus(false)}>返回专题页</button></div> : <ReaderLoading full />)}
-      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑G</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
+      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : readerTopicIds ? readerTopicIds.map(id => publishedTopics.find(topic => topic.id === id)).filter((topic): topic is Topic => !!topic) : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><TopicCategoryEditor key={selected.id} categoryId={selected.category_id} categories={categories} canEdit={isAdmin === true && !offline && selected.user_id === user.id} onSave={updateTopicCategory} /><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑G</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
       {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && !offline && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
     </main><nav className="mobile-nav" aria-label="手机导航"><button className={view === "home" ? "active" : ""} onClick={() => navigate("home")}><span aria-hidden="true">⌂</span>首页</button><button className={view === "library" ? "active" : ""} onClick={() => navigate("library")}><span aria-hidden="true">▤</span>知识库</button><button className={view === "browse" ? "active" : ""} onClick={() => navigate("browse")}><span aria-hidden="true">▧</span>卡片</button><button className={view === "profile" ? "active" : ""} onClick={() => navigate("profile")}><span aria-hidden="true">◉</span>我的</button></nav>
     {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onDelete={id => { const topic = topics.find(item => item.id === id); if (topic) void deleteDraft(topic); }} retryingJobId={retryingJobId} />}
@@ -943,7 +995,7 @@ function RecommendationSection({ points, activities, topics, categories, categor
   </section>;
 }
 
-function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, topicsStatus, searchPoints, query, categoryName, canManage, userId, onCategoriesChanged, onOpen }: { topics: Topic[]; drafts: Topic[]; categories: Category[]; insights: Record<string, TopicInsight>; insightsStatus: "loading" | "loaded" | "error"; topicsStatus: "loading" | "loaded" | "error"; searchPoints: SearchPoint[]; query: string; categoryName: (id: string | null) => string; canManage: boolean; userId: string; onCategoriesChanged: () => Promise<void>; onOpen: (id: string) => void }) {
+function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, topicsStatus, searchPoints, query, categoryName, canManage, userId, onCategoriesChanged, onOpen }: { topics: Topic[]; drafts: Topic[]; categories: Category[]; insights: Record<string, TopicInsight>; insightsStatus: "loading" | "loaded" | "error"; topicsStatus: "loading" | "loaded" | "error"; searchPoints: SearchPoint[]; query: string; categoryName: (id: string | null) => string; canManage: boolean; userId: string; onCategoriesChanged: () => Promise<void>; onOpen: (id: string, ids: string[]) => void }) {
   const [currentTime, setCurrentTime] = useState(0);
   useEffect(() => { queueMicrotask(() => setCurrentTime(Date.now())); }, []);
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -952,6 +1004,8 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
   const [layout, setLayout] = useState<"list" | "grid">("list");
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [lastRandomTopicId, setLastRandomTopicId] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(LIBRARY_BATCH_SIZE);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const searchTerm = query.trim().toLocaleLowerCase();
   const matchingPointTopics = new Set(searchTerm ? searchPoints.filter(point => point.title.toLocaleLowerCase().includes(searchTerm)).map(point => point.topic_id) : []);
   const matchingDrafts = searchTerm ? drafts.filter(topic => topic.title.toLocaleLowerCase().includes(searchTerm) || !!topic.summary?.toLocaleLowerCase().includes(searchTerm) || categoryName(topic.category_id).toLocaleLowerCase().includes(searchTerm) || matchingPointTopics.has(topic.id)) : [];
@@ -983,31 +1037,51 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
     if (readingFilter === "less" && !(insight.viewedCount > 0 && insight.lastViewedAt && currentTime - Date.parse(insight.lastViewedAt) > 14 * 86400000)) return false;
     return true;
   }).sort((a, b) => sort === "title" ? a.title.localeCompare(b.title, "zh-CN") : sort === "created" ? b.created_at.localeCompare(a.created_at) : (insights[b.id]?.lastViewedAt || b.created_at).localeCompare(insights[a.id]?.lastViewedAt || a.created_at));
+  const displayed = visible.slice(0, visibleCount);
+  const scopeIds = displayed.map(topic => topic.id);
+  useEffect(() => { queueMicrotask(() => setVisibleCount(LIBRARY_BATCH_SIZE)); }, [query, categoryFilter, readingFilter, sort]);
+  useEffect(() => {
+    const sentinel = loadMoreRef.current;
+    if (!sentinel || visibleCount >= visible.length) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting) setVisibleCount(count => Math.min(count + LIBRARY_BATCH_SIZE, visible.length));
+    }, { rootMargin: "300px" });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [visibleCount, visible.length, topicsStatus, insightsStatus]);
+  function scopedUrl(id: string) {
+    try { return `/knowledge/${id}?scope=${saveLibraryScope(userId, scopeIds)}`; }
+    catch { return `/knowledge/${id}`; }
+  }
+  function prepareLink(event: React.MouseEvent<HTMLAnchorElement>, id: string) {
+    event.currentTarget.href = scopedUrl(id);
+    if (window.matchMedia("(max-width: 760px)").matches && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      event.preventDefault();
+      onOpen(id, scopeIds);
+      window.history.replaceState({}, "", event.currentTarget.href);
+    }
+  }
   function openRandomVisibleTopic() {
-    const topic = chooseRandomTopic(visible, lastRandomTopicId);
+    const topic = chooseRandomTopic(displayed, lastRandomTopicId);
     if (!topic) return;
     setLastRandomTopicId(topic.id);
-    if (window.matchMedia("(max-width: 760px)").matches) onOpen(topic.id);
-    else window.open(`/knowledge/${topic.id}`, "_blank", "noopener,noreferrer");
+    if (window.matchMedia("(max-width: 760px)").matches) { onOpen(topic.id, scopeIds); window.history.replaceState({}, "", scopedUrl(topic.id)); }
+    else window.open(scopedUrl(topic.id), "_blank", "noopener,noreferrer");
   }
   const totalPoints = topics.reduce((sum, topic) => sum + (insights[topic.id]?.pointCount || 0), 0);
   const viewedPoints = topics.reduce((sum, topic) => sum + (insights[topic.id]?.viewedCount || 0), 0);
-  function readOnMobile(event: React.MouseEvent<HTMLAnchorElement>, id: string) {
-    if (!window.matchMedia("(max-width: 760px)").matches) return;
-    event.preventDefault();
-    onOpen(id);
-  }
   return <section className="page-wrap management-page library-page"><div className="management-heading"><div><span className="eyebrow">知识资产</span><h1 className="page-title">我的知识库</h1><p>选择专题，接着阅读。</p></div><span className="management-count">{topics.length} 个专题</span></div>
     {topicsStatus === "loaded" && insightsStatus === "loaded" && (topics.length >= 2 || totalPoints >= 10) && <div className="library-overview"><div><strong>{topics.length}</strong><span>全部专题</span></div><div><strong>{totalPoints}</strong><span>知识点</span></div><div><strong>{viewedPoints}/{totalPoints}</strong><span>已浏览知识点</span></div></div>}
     <div className="library-categories"><div className="library-categories-heading"><strong>专题分类</strong>{canManage && <button type="button" onClick={() => setCategoriesOpen(value => !value)} aria-expanded={categoriesOpen}>管理分类</button>}</div><div className="library-category-tabs" role="group" aria-label="按专题分类筛选"><button type="button" className={categoryFilter === "all" ? "active" : ""} aria-pressed={categoryFilter === "all"} onClick={() => setCategoryFilter("all")}>全部 <span>{topics.length}</span></button>{availableCategories.map(category => <button type="button" key={category.id} className={categoryFilter === category.id ? "active" : ""} aria-pressed={categoryFilter === category.id} onClick={() => setCategoryFilter(category.id)}>{categoryName(category.id)} <span>{categoryCounts.get(category.id)}</span></button>)}{categoryCounts.has("uncategorized") && <button type="button" className={categoryFilter === "uncategorized" ? "active" : ""} aria-pressed={categoryFilter === "uncategorized"} onClick={() => setCategoryFilter("uncategorized")}>未分类 <span>{categoryCounts.get("uncategorized")}</span></button>}</div></div>
     {insightsStatus === "loaded" && <section className="category-coverage" aria-label="分类阅读覆盖率"><h2>分类阅读覆盖率</h2><div className="category-coverage-grid">{[...availableCategories.map(category => ({ id: category.id, name: categoryName(category.id) })), ...(categoryCounts.has("uncategorized") ? [{ id: "uncategorized", name: "未分类" }] : [])].map(category => { const value = coverage[category.id] || { total: 0, viewed: 0 }; const percent = value.total ? Math.round(value.viewed / value.total * 100) : 0; return <div className="category-coverage-item" key={category.id}><div><strong>{category.name}</strong><span>{value.viewed}/{value.total} · {percent}%</span></div><div className="progress-track" role="progressbar" aria-label={`${category.name}阅读覆盖率`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div></div>; })}</div></section>}
     {canManage && categoriesOpen && <CategoryManager categories={categories} userId={userId} onSaved={onCategoriesChanged} onClose={() => setCategoriesOpen(false)} />}
     <div className="library-filters"><strong>专题筛选 <span>{visible.length}</span></strong><label>阅读情况<select aria-label="按阅读情况筛选专题" value={readingFilter} onChange={event => setReadingFilter(event.target.value)}><option value="all">全部状态</option><option value="unread">尚未阅读</option><option value="started">已开始阅读</option><option value="less">久未阅读</option></select></label><label>排序<select aria-label="专题排序" value={sort} onChange={event => setSort(event.target.value)}><option value="recent">最近阅读</option><option value="created">最近创建</option><option value="title">标题</option></select></label><button type="button" className="library-random-button" aria-label="从当前筛选结果中随机查看专题" title="随机查看当前列表中的专题" disabled={topicsStatus !== "loaded" || insightsStatus !== "loaded" || !visible.length} onClick={openRandomVisibleTopic}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="16" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="1" fill="currentColor" stroke="none"/></svg></button><div className="library-layout" role="group" aria-label="展示方式"><button className={layout === "list" ? "active" : ""} onClick={() => setLayout("list")}>列表</button><button className={layout === "grid" ? "active" : ""} onClick={() => setLayout("grid")}>卡片</button></div></div>
-    {topicsStatus !== "loaded" || insightsStatus !== "loaded" ? <div className="management-empty" role="status">{topicsStatus === "error" || insightsStatus === "error" ? "专题或学习信息暂时无法加载，请刷新页面重试。" : "正在加载专题与学习信息…"}</div> : visible.length ? <div className={`library-list ${layout === "grid" ? "is-grid" : ""}`}>{visible.map(topic => {
+    {topicsStatus !== "loaded" || insightsStatus !== "loaded" ? <div className="management-empty" role="status">{topicsStatus === "error" || insightsStatus === "error" ? "专题或学习信息暂时无法加载，请刷新页面重试。" : "正在加载专题与学习信息…"}</div> : visible.length ? <div className={`library-list ${layout === "grid" ? "is-grid" : ""}`}>{displayed.map(topic => {
       const insight = insights[topic.id] || noInsight;
       const percentage = insight.pointCount ? Math.round(insight.viewedCount / insight.pointCount * 100) : 0;
-      return <article className="library-row" key={topic.id}><div className="library-row-content"><span className="category-tag">{categoryName(topic.category_id)}</span><h2><a href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer" onClick={event => readOnMobile(event, topic.id)}>{topic.title}</a></h2>{topic.summary && <p>{topic.summary}</p>}<div className="library-row-meta"><span>{insight.pointCount} 个知识点</span><span>{studyDate(insight.lastViewedAt)}</span></div></div><div className="library-row-progress"><strong>{insight.viewedCount}/{insight.pointCount}</strong><span>已浏览</span><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div></div><a className="library-row-action" href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer" onClick={event => readOnMobile(event, topic.id)}><span className="library-read-desktop">新标签页阅读</span><span className="library-read-mobile">开始阅读</span></a></article>;
+      return <article className="library-row" key={topic.id}><div className="library-row-content"><span className="category-tag">{categoryName(topic.category_id)}</span><h2><a href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer" onClick={event => prepareLink(event, topic.id)}>{topic.title}</a></h2>{topic.summary && <p>{topic.summary}</p>}<div className="library-row-meta"><span>{insight.pointCount} 个知识点</span><span>{studyDate(insight.lastViewedAt)}</span></div></div><div className="library-row-progress"><strong>{insight.viewedCount}/{insight.pointCount}</strong><span>已浏览</span><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div></div><a className="library-row-action" href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer" onClick={event => prepareLink(event, topic.id)}><span className="library-read-desktop">新标签页阅读</span><span className="library-read-mobile">开始阅读</span></a></article>;
     })}</div> : <div className="management-empty">{topics.length ? "没有符合筛选条件的已发布专题。" : "知识库还没有专题。生成并发布第一份内容后，会在这里开始积累。"}</div>}
+    {topicsStatus === "loaded" && insightsStatus === "loaded" && displayed.length < visible.length && <div ref={loadMoreRef} className="library-load-more"><span>已显示 {displayed.length} / {visible.length} 个专题</span><button type="button" onClick={() => setVisibleCount(count => Math.min(count + LIBRARY_BATCH_SIZE, visible.length))}>加载更多专题</button></div>}
     {matchingDrafts.length > 0 && <div className="global-draft-results"><h2>草稿中的结果</h2>{matchingDrafts.map(topic => <a key={topic.id} href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer"><span className="category-tag">{categoryName(topic.category_id)}</span><strong>{topic.title}</strong><span>新标签页完善</span></a>)}</div>}
   </section>;
 }

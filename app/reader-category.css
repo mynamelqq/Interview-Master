@@ -1,0 +1,33 @@
+.reader-category-editor,
+.reader-category-editor form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reader-category-editor > span {
+  overflow-wrap: anywhere;
+}
+
+.reader-category-editor form label {
+  font-size: 13px;
+  color: #536176;
+}
+
+.reader-category-editor select {
+  max-width: min(340px, 65vw);
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.reader-category-editor .reader-category-error {
+  color: #a74a3c;
+  font-size: 12px;
+}

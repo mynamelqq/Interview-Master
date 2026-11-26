@@ -99,6 +99,8 @@
 .library-layout button.active { background: #eaf1fe; color: #286bd4; font-weight: 700; }
 .nav-list button,.mobile-nav button,.reader-toolbar button,.reader-actions button,.library-category-tabs button,.library-layout button,.library-random-button,.draft-tabs button,.task-filters button,.eyebrow,.category-tag,.management-count,.management-heading .page-title,.library-categories-heading,.library-filters > strong,.library-overview,.library-row-meta,.library-row-progress,.reader-toolbar > span { user-select: none; }
 .library-list, .draft-worklist { border: 1px solid #e0e6ee; border-radius: 10px; background: #fff; overflow: hidden; }
+.library-load-more { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 20px; color: #64748b; font-size: 12px; }
+.library-load-more button { padding: 8px 14px; border: 1px solid #dfe6ee; border-radius: 6px; background: #fff; color: #286bd4; cursor: pointer; }
 .library-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 120px; align-items: center; gap: 28px; min-height: 132px; padding: 21px 25px; border-bottom: 1px solid #e9edf2; }
 .library-row:last-child, .draft-workrow:last-child { border-bottom: 0; }
 .library-row:hover, .draft-workrow:hover { background: #fcfdff; }

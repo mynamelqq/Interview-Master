@@ -6,6 +6,7 @@ import "./home.css";
 import "./focus-reader.css";
 import "./flashcard.css";
 import "./management-pages.css";
+import "./reader-category.css";
 import "./mobile.css";
 import "./model-groups.css";
 import "katex/dist/katex.min.css";
