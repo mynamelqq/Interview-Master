@@ -50,6 +50,12 @@ export async function listOfflineTopics(userId: string): Promise<OfflineTopic[]>
   return all.filter(item => item.userId === userId);
 }
 
+export async function listOfflineTopicIds(userId: string): Promise<string[]> {
+  const keys = await read<IDBValidKey[]>(store => store.getAllKeys());
+  const prefix = `${userId}:`;
+  return keys.filter((key): key is string => typeof key === "string" && key.startsWith(prefix)).map(key => key.slice(prefix.length));
+}
+
 export function removeOfflineTopic(userId: string, topicId: string): Promise<void> {
   return write(store => store.delete(`${userId}:${topicId}`));
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { isValidElement, useRef, useState } from "react";
+import { isValidElement, memo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -37,6 +37,6 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   return <div className={`code-block ${foldable && !expanded ? "code-collapsed" : ""}`}>{language && <span className="code-language">{language}</span>}<button type="button" onClick={copy} aria-label="复制代码">{copied ? "已复制" : "复制"}</button><div ref={codeRef}><pre>{children}</pre></div>{foldable && <button className="code-expand" type="button" onClick={() => setExpanded(value => !value)}>{expanded ? "收起代码" : "展开代码"}</button>}</div>;
 }
 
-export function MarkdownContent({ content, className = "", prose = false }: { content: string | null | undefined; className?: string; prose?: boolean }) {
+export const MarkdownContent = memo(function MarkdownContent({ content, className = "", prose = false }: { content: string | null | undefined; className?: string; prose?: boolean }) {
   return <div className={`markdown ${className}`}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, [rehypeHighlight, { detect: false }]]} components={{ pre: CodeBlock }}>{normalizeMarkdown(content, prose)}</ReactMarkdown></div>;
-}
+});

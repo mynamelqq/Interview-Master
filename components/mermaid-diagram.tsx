@@ -1,18 +1,33 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 let configured = false;
 let diagramNumber = 0;
 
 export function MermaidDiagram({ source }: { source: string }) {
+  const figureRef = useRef<HTMLElement>(null);
+  const [visible, setVisible] = useState(false);
   const [svg, setSvg] = useState("");
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
+    const element = figureRef.current;
+    if (!element) return;
+    if (typeof IntersectionObserver === "undefined") { queueMicrotask(() => setVisible(true)); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { rootMargin: "400px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     let active = true;
-    if (!source || source.length > 12000) return;
+    if (!visible || !source || source.length > 12000) return;
     void (async () => {
       try {
         const { default: mermaid } = await import("mermaid");
@@ -68,10 +83,10 @@ export function MermaidDiagram({ source }: { source: string }) {
       }
     })();
     return () => { active = false; };
-  }, [source]);
+  }, [source, visible]);
 
   if (!source || failed || source.length > 12000) return <div className="mermaid-fallback"><p>图表暂时无法显示，以下是原始内容：</p><pre><code>{source}</code></pre></div>;
-  return <figure className={`mermaid-diagram${expanded ? " is-expanded" : ""}`} aria-label="知识图表">
+  return <figure ref={figureRef} className={`mermaid-diagram${expanded ? " is-expanded" : ""}`} aria-label="知识图表">
     <figcaption className="mermaid-heading">
       <span className="mermaid-heading-label">图解</span>
       {svg && <button type="button" className="mermaid-expand" onClick={() => setExpanded(!expanded)} aria-pressed={expanded}>{expanded ? "适应宽度" : "放大查看"}<span aria-hidden="true">↗</span></button>}

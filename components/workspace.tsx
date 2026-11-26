@@ -18,6 +18,7 @@ import { NotesPanel } from "@/components/notes-panel";
 import { scheduleReview, type ReviewLevel, type ReviewProgress, type ReviewUndo } from "@/lib/review-schedule";
 import { CardReview } from "@/components/card-review";
 import { reviewableDrafts } from "@/lib/topic-workflow";
+import { jobStatusSignature, newlyCompletedJobIds } from "@/lib/generation-job-state";
 import { recommendPoints, type PointActivity, type PointCandidate, type PointRecommendation } from "@/lib/point-recommendations";
 import { CasualCards } from "@/components/casual-cards";
 import { ReadingActivityTracker } from "@/components/reading-activity-tracker";
@@ -29,7 +30,7 @@ import { FavoritesPanel } from "@/components/favorites-panel";
 import { ModelGroupPicker, type ModelGroupDraft } from "@/components/model-group-picker";
 import type { AiModelGroup } from "@/lib/ai-model-groups";
 import { MobileHome } from "@/components/mobile-home";
-import { getOfflineTopic, listOfflineTopics, removeOfflineTopic, saveOfflineTopic, type OfflineTopic } from "@/lib/offline-topics";
+import { getOfflineTopic, listOfflineTopicIds, listOfflineTopics, removeOfflineTopic, saveOfflineTopic, type OfflineTopic } from "@/lib/offline-topics";
 
 type View = "home" | "library" | "favorites" | "notes" | "drafts" | "create" | "reader" | "browse" | "profile";
 type PointsLoad = { topicId: string | null; status: "idle" | "loading" | "loaded" | "error" };
@@ -96,6 +97,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
   const [offlineTopics, setOfflineTopics] = useState<OfflineTopic[]>([]);
+  const [savedOfflineIds, setSavedOfflineIds] = useState<string[]>([]);
   const [view, setView] = useState<View>(initialTopicId ? "reader" : "home");
   const [readerReturnView, setReaderReturnView] = useState<"library" | "favorites" | "drafts">("library");
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -121,6 +123,9 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [recommendationSettingsOpen, setRecommendationSettingsOpen] = useState(false);
   const recommendedPoolSignature = useRef("");
   const completedJobsRef = useRef("");
+  const jobsSnapshotRef = useRef<string | null>(null);
+  const jobsDisplaySnapshotRef = useRef("");
+  const initialInsightsUserRef = useRef<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [points, setPoints] = useState<KnowledgePoint[]>([]);
   const [pointsLoad, setPointsLoad] = useState<PointsLoad>({ topicId: initialTopicId || null, status: initialTopicId ? "loading" : "idle" });
@@ -223,6 +228,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (!navigator.onLine && currentUserId) {
       const saved = await listOfflineTopics(currentUserId).catch(() => []);
       setOfflineTopics(saved);
+      setSavedOfflineIds(saved.map(item => item.topic.id));
       setTopics(saved.map(item => item.topic));
       setTopicsLoad("loaded");
       return;
@@ -231,17 +237,16 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       initialReaderScopeIds.current = [...new Set([...readLibraryScope(currentUserId || ""), initialTopicId])];
     }
     const scopedIds = initialReaderScopeActive.current ? initialReaderScopeIds.current : null;
-    const [topicResult, categoryResult] = await Promise.all([
-      scopedIds ? db.from("topics").select("*").in("id", scopedIds).order("created_at", { ascending: false }) : db.from("topics").select("*").order("created_at", { ascending: false }),
-      db.from("categories").select("*").order("sort_order").order("name"),
-    ]);
+    const topicResult = await (scopedIds ? db.from("topics").select("*").in("id", scopedIds).order("created_at", { ascending: false }) : db.from("topics").select("*").order("created_at", { ascending: false }));
     if (topicResult.error) {
       const saved = currentUserId ? await listOfflineTopics(currentUserId).catch(() => []) : [];
-      if (saved.length) { setOfflineTopics(saved); setTopics(saved.map(item => item.topic)); setTopicsLoad("loaded"); }
+      if (saved.length) { setOfflineTopics(saved); setSavedOfflineIds(saved.map(item => item.topic.id)); setTopics(saved.map(item => item.topic)); setTopicsLoad("loaded"); }
       else { setError(topicResult.error.message); setTopicsLoad("error"); }
     }
     else { setTopics(topicResult.data as Topic[]); setReaderTopicIds(scopedIds); setTopicsLoad("loaded"); }
-    if (!categoryResult.error) setCategories(categoryResult.data as Category[]);
+    void db.from("categories").select("*").order("sort_order").order("name").then(({ data, error: categoryError }) => {
+      if (!categoryError && authUserIdRef.current === currentUserId) setCategories(data as Category[]);
+    });
   }, [currentUserId, initialTopicId]);
   const loadJobs = useCallback(async () => {
     if (!db) return;
@@ -263,21 +268,29 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       await db.from("topic_generation_jobs").update({ status: "failed", error_message: job.raw_output?.regeneration ? "重新生成超时，原专题内容已保留，可重试。" : "生成任务超时，请重新创建专题。", finished_at: new Date().toISOString() }).eq("id", job.id).eq("status", "running");
       if (job.topic_id && !job.raw_output?.regeneration) await db.from("topics").update({ generation_status: "failed" }).eq("id", job.topic_id).in("generation_status", ["pending", "running"]);
     }
-    setJobs(rows.map(job => stale.some(item => item.id === job.id) ? { ...job, status: "failed", error_message: job.raw_output?.regeneration ? "重新生成超时，原专题内容已保留，可重试。" : "生成任务超时，请重新创建专题。" } : job));
-    if (initialReaderScopeActive.current || rows.some(job => job.status === "pending")) {
+    const visibleJobs = rows.map(job => stale.some(item => item.id === job.id) ? { ...job, status: "failed" as const, error_message: job.raw_output?.regeneration ? "重新生成超时，原专题内容已保留，可重试。" : "生成任务超时，请重新创建专题。" } : job);
+    const snapshot = jobStatusSignature(visibleJobs);
+    const displaySnapshot = visibleJobs.map(job => `${job.id}:${job.status}:${job.raw_output?.stage || ""}:${job.raw_output?.completed_sections || 0}:${job.raw_output?.total_sections || 0}:${job.error_message || ""}`).join("|");
+    const hadJobsSnapshot = jobsSnapshotRef.current !== null;
+    const jobsChanged = hadJobsSnapshot && jobsSnapshotRef.current !== snapshot;
+    jobsSnapshotRef.current = snapshot;
+    if (jobsDisplaySnapshotRef.current !== displaySnapshot) { jobsDisplaySnapshotRef.current = displaySnapshot; setJobs(visibleJobs); }
+    if (rows.some(job => job.status === "pending")) {
       void postGenerationRequest(db, "/api/topics/dispatch", {}).catch(() => {});
     }
     setJobsLoaded(true);
-    await load();
+    const topicRefresh = jobsChanged ? load() : null;
     const completedSignature = rows.filter(job => job.status === "completed").map(job => job.id).sort().join(",");
+    const newlyCompletedIds = newlyCompletedJobIds(completedJobsRef.current, rows);
     if (completedSignature !== completedJobsRef.current) {
       completedJobsRef.current = completedSignature;
-      if (!initialReaderScopeActive.current) await loadInsights();
     }
-    if (selectedId && rows.some(job => job.topic_id === selectedId && job.status === "completed")) {
+    if (hadJobsSnapshot && selectedId && rows.some(job => job.topic_id === selectedId && newlyCompletedIds.includes(job.id))) {
       const { data: latestPoints } = await db.from("knowledge_points").select("*").eq("topic_id", selectedId).order("sort_order");
       if (latestPoints && selectedIdRef.current === selectedId) { setPoints(latestPoints as KnowledgePoint[]); setPointsLoad({ topicId: selectedId, status: "loaded" }); }
     }
+    if (topicRefresh) await topicRefresh;
+    if (hadJobsSnapshot && newlyCompletedIds.length && !initialReaderScopeActive.current) void loadInsights();
   }, [load, loadInsights, selectedId]);
 
   useEffect(() => {
@@ -288,6 +301,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         authUserIdRef.current = next?.id || null;
         setTopics([]);
         setOfflineTopics([]);
+        setSavedOfflineIds([]);
         setIsAdmin(null);
         setView(initialTopicId ? "reader" : "home");
         setTopicsLoad("loading");
@@ -306,6 +320,9 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         setRecommendationPreferencesReady(false);
         recommendedPoolSignature.current = "";
         completedJobsRef.current = "";
+        jobsSnapshotRef.current = null;
+        jobsDisplaySnapshotRef.current = "";
+        initialInsightsUserRef.current = null;
         setPoints([]);
         setReviewsReady(false);
         setPointsLoad({ topicId: selectedIdRef.current, status: selectedIdRef.current ? "loading" : "idle" });
@@ -336,6 +353,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       if (session?.user) { remember(session.user); applyUser(session.user); setOffline(!navigator.onLine); }
       else if (event === "SIGNED_OUT" && navigator.onLine) { window.localStorage.removeItem(offlineIdentityKey); applyUser(null); }
       else if (navigator.onLine) applyUser(null);
+      if (event === "INITIAL_SESSION") setReady(true);
     });
     return () => listener.subscription.unsubscribe();
   }, [initialTopicId]);
@@ -353,8 +371,13 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   }, [user, offline, load, loadInsights]);
   useEffect(() => {
     if (!currentUserId) return;
-    void listOfflineTopics(currentUserId).then(setOfflineTopics).catch(() => {});
-  }, [currentUserId]);
+    if (offline) return;
+    void listOfflineTopicIds(currentUserId).then(ids => { if (authUserIdRef.current === currentUserId) setSavedOfflineIds(ids); }).catch(() => {});
+  }, [currentUserId, offline]);
+  useEffect(() => {
+    if (!currentUserId || offline || view !== "profile") return;
+    void listOfflineTopics(currentUserId).then(saved => { if (authUserIdRef.current === currentUserId) setOfflineTopics(saved); }).catch(() => {});
+  }, [currentUserId, offline, view]);
   useEffect(() => {
     if (!db || !user) return;
     if (offline) { queueMicrotask(() => setIsAdmin(false)); return; }
@@ -399,9 +422,23 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener("keydown", closeOnEscape); };
   }, [mobileNavOpen]);
-  useEffect(() => { if (user) { void Promise.resolve().then(load); } }, [user, load]);
+  useEffect(() => { if (user && !offline) { void Promise.resolve().then(load); } }, [user, offline, load]);
   useEffect(() => { if (user && offline) { void Promise.resolve().then(load); } }, [user, offline, load]);
-  useEffect(() => { if (user && !offline && !initialTopicId) { void Promise.resolve().then(loadInsights); } }, [user, offline, initialTopicId, loadInsights]);
+  useEffect(() => {
+    if (!currentUserId || offline || initialTopicId || view === "reader" || topicsLoad !== "loaded" || initialInsightsUserRef.current === currentUserId) return;
+    let cancelled = false;
+    const start = () => {
+      if (cancelled || initialInsightsUserRef.current === currentUserId) return;
+      initialInsightsUserRef.current = currentUserId;
+      void loadInsights();
+    };
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(start, { timeout: 1200 });
+      return () => { cancelled = true; window.cancelIdleCallback(id); };
+    }
+    const id = setTimeout(start, 0);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [currentUserId, offline, initialTopicId, view, topicsLoad, loadInsights]);
   useEffect(() => {
     if (!db || !currentUserId) return;
     if (offline) { queueMicrotask(() => { setRecommendationPreferencesReady(true); setRecommendationPreferences(defaultRecommendationPreferences); }); return; }
@@ -423,13 +460,13 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     });
   }, [offline, offlineTopics]);
   useEffect(() => {
-    if (!user || isAdmin !== true) return;
+    if (!user || isAdmin !== true || topicsLoad !== "loaded" || (view === "reader" && pointsLoad.status === "loading")) return;
     void Promise.resolve().then(loadJobs);
     const timer = window.setInterval(() => { void loadJobs(); }, 5000);
     return () => window.clearInterval(timer);
-  }, [user, isAdmin, loadJobs]);
+  }, [user, isAdmin, topicsLoad, view, pointsLoad.status, loadJobs]);
   useEffect(() => {
-    if (!db || !currentUserId || isAdmin !== true) return;
+    if (!db || !currentUserId || isAdmin !== true || modelGroupsStatus === "loaded" || (view !== "create" && view !== "reader" && !taskDrawerOpen) || topicsLoad !== "loaded" || (view === "reader" && pointsLoad.status === "loading")) return;
     let cancelled = false;
     void db.auth.getSession().then(async ({ data }) => {
       const token = data.session?.access_token;
@@ -445,7 +482,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       setModelGroupsStatus("loaded");
     }).catch(error => { if (!cancelled) { setModelGroupsStatus("error"); setError(error instanceof Error ? error.message : "加载模型分组失败"); } });
     return () => { cancelled = true; };
-  }, [currentUserId, isAdmin]);
+  }, [currentUserId, isAdmin, modelGroupsStatus, taskDrawerOpen, topicsLoad, view, pointsLoad.status]);
   function selectModelGroup(id: string) {
     setSelectedModelGroupId(id);
     if (currentUserId) window.localStorage.setItem(`im:model-group:${currentUserId}`, id);
@@ -666,11 +703,16 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   async function toggleOfflineTopic() {
     if (!user || !selected || selected.status !== "published" || pointsLoad.status !== "loaded") return;
     try {
-      if (offlineTopics.some(item => item.topic.id === selected.id)) await removeOfflineTopic(user.id, selected.id);
+      if (savedOfflineIds.includes(selected.id)) await removeOfflineTopic(user.id, selected.id);
       else await saveOfflineTopic(user.id, selected, categoryName(selected.category_id), points);
-      const saved = await listOfflineTopics(user.id);
-      setOfflineTopics(saved);
-      if (offline) setTopics(saved.map(item => item.topic));
+      if (offline) {
+        const saved = await listOfflineTopics(user.id);
+        setOfflineTopics(saved);
+        setSavedOfflineIds(saved.map(item => item.topic.id));
+        setTopics(saved.map(item => item.topic));
+      } else {
+        setSavedOfflineIds(await listOfflineTopicIds(user.id));
+      }
     } catch { setError("保存离线专题失败，请检查浏览器存储空间。"); }
   }
   useEffect(() => {
@@ -764,12 +806,12 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       const result: { error?: string; created?: { title: string }[]; failed?: { title: string; error: string; jobId?: string }[] } = await response.json();
       const created = result.created || [];
       const failed = result.failed || [];
-      if (created.length || failed.some(item => item.jobId)) await loadJobs();
+      if (created.length || failed.some(item => item.jobId)) void loadJobs().catch(() => setError("任务已提交，但任务列表刷新失败，请稍后再查看。"));
       if (failed.length) {
         setError(`已创建 ${created.length} 个任务，${failed.length} 个失败：${failed.map(item => `${item.title}（${item.error}）`).join("；")}`);
         return { createdCount: created.length, failedTitles: failed.map(item => item.title) };
       }
-      if (!response.ok) { setError(result.error || "创建任务失败"); return null; }
+      if (!response.ok || !created.length) { setError(result.error || "创建任务失败"); return null; }
       return { createdCount: created.length, failedTitles: [] };
     } catch (error) { setError(error instanceof SessionExpiredError ? error.message : "网络请求失败，请重试。"); return null; }
     finally { setBusy(false); }
@@ -936,7 +978,6 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   if (!ready) return <div className="center-screen">正在载入知识库…</div>;
   if (!db) return <div className="center-screen setup"><div className="brand-mark">IM</div><h1>Interview Master</h1><p>先配置 Supabase 环境变量并执行数据库迁移，即可开始使用。</p><code>NEXT_PUBLIC_SUPABASE_URL · NEXT_PUBLIC_SUPABASE_ANON_KEY</code></div>;
   if (!user) return <AuthScreen />;
-  if (isAdmin === null) return <div className="center-screen" role="status">正在确认账户权限…</div>;
 
   return <div className={`shell shell-view-${view} ${navCollapsed ? "shell-nav-collapsed" : ""} ${view === "reader" ? "shell-reading" : ""} ${readingNavOpen ? "shell-reading-nav-open" : ""} ${focus ? "shell-focus" : ""} ${mobileNavOpen ? "mobile-nav-open" : ""}`}>
     {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="关闭导航" onClick={() => setMobileNavOpen(false)} />}
@@ -967,7 +1008,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         continuePoint={searchPoints.find(point => point.id === lastPointId)?.title || null}
         topicCount={publishedTopics.length}
         favoriteCount={favoriteCount}
-        savedCount={offlineTopics.length}
+        savedCount={savedOfflineIds.length}
         draftCount={draftTopics.length}
         activeJobCount={jobs.filter(job => job.status === "pending" || job.status === "running").length}
         canManage={isAdmin === true && !offline}
@@ -1010,12 +1051,12 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       {view === "favorites" && <FavoritesPanel points={searchPoints} activities={pointActivity} topics={topics} categories={categories} status={insightsStatus === "error" || topicsLoad === "error" ? "error" : insightsStatus === "loaded" && topicsLoad === "loaded" ? "loaded" : "loading"} categoryName={categoryName} onOpen={openTopic} onRemove={id => setPointControl(id, "unfavorite")} onBrowse={() => navigate("library")} />}
       {view === "notes" && <NotesPanel userId={user.id} topics={topics} categoryName={categoryName} onOpen={(topicId, chapterId) => openTopic(topicId, undefined, chapterId)} />}
       {view === "browse" && (insightsStatus === "loaded" && recommendationPreferencesReady ? <CasualCards userId={user.id} points={preferredRecommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} offline={offline} onSeen={onCardSeen} onControl={setPointControl} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
-      {view === "profile" && <ProfilePanel email={user.email || "离线阅读"} topics={publishedTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} offlineTopics={offlineTopics} onOpen={openTopic} onSignOut={() => { window.localStorage.removeItem("im:offline-identity"); authUserIdRef.current = null; setUser(null); setOfflineTopics([]); setTopics([]); void db?.auth.signOut({ scope: "local" }); }} />}
+      {view === "profile" && <ProfilePanel email={user.email || "离线阅读"} topics={publishedTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} offlineTopics={offlineTopics} onOpen={openTopic} onSignOut={() => { window.localStorage.removeItem("im:offline-identity"); authUserIdRef.current = null; setUser(null); setOfflineTopics([]); setSavedOfflineIds([]); setTopics([]); void db?.auth.signOut({ scope: "local" }); }} />}
       {view === "drafts" && isAdmin && <DraftPanel topics={draftTopics} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} onOpen={openTopic} onCreate={() => navigate("create")} onDelete={topic => void deleteDraft(topic)} />}
       {view === "create" && isAdmin && <CreatePanel busy={busy} groups={modelGroups} groupsStatus={modelGroupsStatus} selectedGroupId={selectedModelGroupId} onSelectGroup={selectModelGroup} onSaveGroup={saveModelGroup} onGenerate={generate} onManual={createManual} onViewTasks={() => setTaskDrawerOpen(true)} />}
-      {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} savedOffline={offlineTopics.some(item => item.topic.id === selected.id)} onToggleOffline={() => void toggleOfflineTopic()} onOpenMenu={() => setMobileNavOpen(true)} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} canGenerateAnswers={isAdmin === true && !offline} onGenerateAnswer={generateFollowupAnswer} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
+      {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} savedOffline={savedOfflineIds.includes(selected.id)} onToggleOffline={() => void toggleOfflineTopic()} onOpenMenu={() => setMobileNavOpen(true)} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} canGenerateAnswers={isAdmin === true && !offline} onGenerateAnswer={generateFollowupAnswer} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
       {view === "reader" && focus && selected && pointsLoad.status !== "loaded" && (pointsLoad.status === "error" ? <div className="reader-load-error">专题内容加载失败。<button className="text-btn" onClick={() => setFocus(false)}>返回专题页</button></div> : <ReaderLoading full />)}
-      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>{readerTopicIds ? "专题列表" : "切换专题"}</h3>{(selected?.status === "draft" ? draftTopics : readerTopicIds ? readerTopicIds.map(id => publishedTopics.find(topic => topic.id === id)).filter((topic): topic is Topic => !!topic) : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} title={topic.title} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><TopicCategoryEditor key={selected.id} categoryId={selected.category_id} categories={categories} canEdit={isAdmin === true && !offline && selected.user_id === user.id} onSave={updateTopicCategory} /><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>切换专题</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>当前专题目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>专题阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>知识点复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map((section, sectionIndex) => <section key={section.id} id={`section-${section.id}`}><span className="chapter-kicker">章节 {String(sectionIndex + 1).padStart(2, "0")}</span><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} onGenerateAnswer={generateFollowupAnswer} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="当前专题目录"><h3>当前专题目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note"></div></aside></section>}
+      {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>{readerTopicIds ? "专题列表" : "切换专题"}</h3>{(selected?.status === "draft" ? draftTopics : readerTopicIds ? readerTopicIds.map(id => publishedTopics.find(topic => topic.id === id)).filter((topic): topic is Topic => !!topic) : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} title={topic.title} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><TopicCategoryEditor key={selected.id} categoryId={selected.category_id} categories={categories} canEdit={isAdmin === true && !offline && selected.user_id === user.id} onSave={updateTopicCategory} /><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>切换专题</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>当前专题目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>专题阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>知识点复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map((section, sectionIndex) => <section key={section.id} id={`section-${section.id}`}><span className="chapter-kicker">章节 {String(sectionIndex + 1).padStart(2, "0")}</span><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin === true} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} onGenerateAnswer={generateFollowupAnswer} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="当前专题目录"><h3>当前专题目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note"></div></aside></section>}
       {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && !offline && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
     </main><nav className="mobile-nav" aria-label="手机导航"><button className={view === "home" ? "active" : ""} onClick={() => navigate("home")}><span aria-hidden="true">⌂</span>首页</button><button className={view === "library" ? "active" : ""} onClick={() => navigate("library")}><span aria-hidden="true">▤</span>知识库</button><button className={view === "browse" ? "active" : ""} onClick={() => navigate("browse")}><span aria-hidden="true">▧</span>卡片</button><button className={view === "profile" ? "active" : ""} onClick={() => navigate("profile")}><span aria-hidden="true">◉</span>我的</button></nav>
     {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} modelGroups={modelGroups} modelGroupsStatus={modelGroupsStatus} selectedModelGroupId={selectedModelGroupId} onSelectModelGroup={selectModelGroup} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onRetryAll={() => void retryAllJobs()} retryAllProgress={retryAllProgress} onDelete={job => void deleteJob(job)} retryingJobId={retryingJobId} />}
@@ -1283,7 +1324,7 @@ function CreatePanel({ busy, groups, groupsStatus, selectedGroupId, onSelectGrou
     finally { setReadingFile(false); }
   }
 
-  return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入一个或多个专题名称，AI 会自动选择分类并生成内容。多个名称用 ; 分隔，也可以导入 .txt 文件。完成后可在草稿箱检查。</p><ModelGroupPicker groups={groups} selectedId={selectedGroupId} status={groupsStatus} onSelect={onSelectGroup} onSave={onSaveGroup} /><form onSubmit={submit}><label htmlFor="topic-title">专题名称</label><textarea id="topic-title" rows={5} placeholder="例如：Redis 持久化机制;MySQL 索引原理" value={input} disabled={busy} onChange={event => { setInput(event.target.value); setFileError(""); setSubmission(null); }} aria-describedby="topic-input-help" /><p id="topic-input-help" className="create-input-help">用英文 ; 或中文 ； 分隔，每个名称最多 120 字，单次最多 100 个任务。</p><label className="create-file-label" htmlFor="topic-file">导入文本文件（.txt）</label><input id="topic-file" type="file" accept=".txt,text/plain" disabled={busy || readingFile} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />{fileError && <p className="create-input-error" role="alert">{fileError}</p>}{invalidTitle && <p className="create-input-error" role="alert">专题名称不能超过 120 字：{invalidTitle}</p>}{titles.length > 100 && <p className="create-input-error" role="alert">单次最多提交 100 个专题。</p>}<div className="generation-list"><span>生成内容 · {titles.length} 个专题</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={!canSubmit}>{busy ? "正在提交任务…" : titles.length > 1 ? `AI 生成 ${titles.length} 个专题` : "AI 生成专题"}</button>{submission && <div className="create-submit-success" role="status"><strong>已提交 {submission.createdCount} 个生成任务</strong><span>{submission.failedCount ? `另外 ${submission.failedCount} 个标题未提交，已保留在输入框。` : "输入框已清空，可在生成任务中查看进度。"}</span><button type="button" onClick={onViewTasks}>查看生成任务 →</button></div>}<button type="button" className="text-btn" disabled={busy || readingFile || titles.length !== 1 || !!invalidTitle} onClick={() => onManual(titles[0])}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
+  return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入一个或多个专题名称，AI 会自动选择分类并生成内容。多个名称用 ; 分隔，也可以导入 .txt 文件。完成后可在草稿箱检查。</p><ModelGroupPicker groups={groups} selectedId={selectedGroupId} status={groupsStatus} onSelect={onSelectGroup} onSave={onSaveGroup} /><form onSubmit={submit}><label htmlFor="topic-title">专题名称</label><textarea id="topic-title" rows={5} placeholder="例如：Redis 持久化机制;MySQL 索引原理" value={input} disabled={busy} onChange={event => { setInput(event.target.value); setFileError(""); setSubmission(null); }} aria-describedby="topic-input-help" /><p id="topic-input-help" className="create-input-help">用英文 ; 或中文 ； 分隔，每个名称最多 120 字，单次最多 100 个任务。</p><label className="create-file-label" htmlFor="topic-file">导入文本文件（.txt）</label><input id="topic-file" type="file" accept=".txt,text/plain" disabled={busy || readingFile} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />{fileError && <p className="create-input-error" role="alert">{fileError}</p>}{invalidTitle && <p className="create-input-error" role="alert">专题名称不能超过 120 字：{invalidTitle}</p>}{titles.length > 100 && <p className="create-input-error" role="alert">单次最多提交 100 个专题。</p>}<div className="generation-list"><span>生成内容 · {titles.length} 个专题</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={!canSubmit}>{busy ? "正在提交任务…" : titles.length > 1 ? `AI 生成 ${titles.length} 个专题` : "AI 生成专题"}</button>{submission && <div className="create-submit-success" role="status"><strong>已提交 {submission.createdCount} 个生成任务</strong><button type="button" onClick={onViewTasks}>查看生成任务 →</button></div>}<button type="button" className="text-btn" disabled={busy || readingFile || titles.length !== 1 || !!invalidTitle} onClick={() => onManual(titles[0])}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
 }
 
 function PointBlock({ point, activity, mastery, canEdit, onSave, onVerify, onControl, onGenerateAnswer }: { point: KnowledgePoint; activity?: PointActivity; mastery: number; canEdit: boolean; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void; onControl: (id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") => Promise<boolean>; onGenerateAnswer: (point: KnowledgePoint, question: string) => Promise<string | null> }) {
