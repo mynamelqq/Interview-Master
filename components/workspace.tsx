@@ -31,6 +31,7 @@ import { getOfflineTopic, listOfflineTopics, removeOfflineTopic, saveOfflineTopi
 
 type View = "home" | "library" | "favorites" | "notes" | "drafts" | "create" | "reader" | "browse" | "profile";
 type PointsLoad = { topicId: string | null; status: "idle" | "loading" | "loaded" | "error" };
+type RetryAllProgress = { attempted: number; total: number; started: number; rejected: number; running: boolean; message?: string };
 type TopicInsight = { pointCount: number; verifiedCount: number; ratedCount: number; masteredCount: number; weakCount: number; viewedCount: number; lastViewedAt: string | null; lastReviewedAt: string | null };
 type SearchPoint = PointCandidate;
 const db = getBrowserClient();
@@ -105,6 +106,8 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [selectedModelGroupId, setSelectedModelGroupId] = useState("");
   const [jobsLoaded, setJobsLoaded] = useState(false);
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const [retryAllProgress, setRetryAllProgress] = useState<RetryAllProgress | null>(null);
+  const retryAllRunningRef = useRef(false);
   const [topicInsights, setTopicInsights] = useState<Record<string, TopicInsight>>({});
   const [insightsStatus, setInsightsStatus] = useState<"loading" | "loaded" | "error">("loading");
   const [searchPoints, setSearchPoints] = useState<SearchPoint[]>([]);
@@ -737,12 +740,13 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     setBusy(true); setError("");
     try {
       const response = await postGenerationRequest(db, "/api/topics/generate", { titles, groupId: selectedModelGroupId });
-      const result: { error?: string; created?: { title: string }[]; failed?: { title: string; error: string }[] } = await response.json();
+      const result: { error?: string; created?: { title: string }[]; failed?: { title: string; error: string; jobId?: string }[] } = await response.json();
       const created = result.created || [];
       const failed = result.failed || [];
-      if (created.length) await loadJobs();
+      if (created.length || failed.some(item => item.jobId)) await loadJobs();
       if (failed.length) {
         setError(`已创建 ${created.length} 个任务，${failed.length} 个失败：${failed.map(item => `${item.title}（${item.error}）`).join("；")}`);
+        if (failed.some(item => item.jobId)) setTaskDrawerOpen(true);
         return failed.map(item => item.title);
       }
       if (!response.ok) { setError(result.error || "创建任务失败"); return null; }
@@ -766,7 +770,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     finally { setRegeneratingTopicId(null); }
   }
   async function retryJob(job: GenerationJob) {
-    if (!db || isAdmin !== true || job.status !== "failed" || retryingJobId) return;
+    if (!db || isAdmin !== true || job.status !== "failed" || retryingJobId || retryAllRunningRef.current) return;
     if (modelGroupsStatus !== "loaded" || !selectedModelGroupId) { setError("请先选择本次重试使用的模型分组"); return; }
     setRetryingJobId(job.id); setError("");
     try {
@@ -776,6 +780,55 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       await loadJobs();
     } catch (error) { setError(error instanceof SessionExpiredError ? error.message : "重试请求失败，请稍后再试。"); }
     finally { setRetryingJobId(null); }
+  }
+  async function retryAllJobs() {
+    if (!db || isAdmin !== true || retryingJobId || retryAllRunningRef.current) return;
+    if (modelGroupsStatus !== "loaded" || !selectedModelGroupId) { setError("请先选择本次重试使用的模型分组"); return; }
+    const failedJobs = jobs.filter(job => job.status === "failed");
+    if (!failedJobs.length) return;
+    const groupId = selectedModelGroupId;
+    retryAllRunningRef.current = true;
+    setError("");
+    setRetryAllProgress({ attempted: 0, total: failedJobs.length, started: 0, rejected: 0, running: true });
+    let started = 0;
+    let rejected = 0;
+    let attempted = 0;
+    let interruption = "";
+    try {
+      for (const job of failedJobs) {
+        try {
+          const response = await postGenerationRequest(db, "/api/topics/retry", { jobId: job.id, groupId });
+          if (response.ok) started++;
+          else rejected++;
+        } catch (error) {
+          if (error instanceof SessionExpiredError) { interruption = error.message; break; }
+          rejected++;
+        }
+        attempted++;
+        setRetryAllProgress({ attempted, total: failedJobs.length, started, rejected, running: true });
+      }
+    } finally {
+      try { await loadJobs(); }
+      finally {
+        retryAllRunningRef.current = false;
+        setRetryAllProgress({
+          attempted, total: failedJobs.length, started, rejected, running: false,
+          message: interruption || (rejected ? `${rejected} 项未能重试，仍保留在失败列表中。` : "已提交全部重试，生成进度见下方列表。"),
+        });
+      }
+    }
+  }
+  async function deleteJob(job: GenerationJob) {
+    if (!db || isAdmin !== true || job.status !== "failed" || retryAllRunningRef.current) return;
+    if (job.topic_id) {
+      const topic = topics.find(item => item.id === job.topic_id);
+      if (topic) await deleteDraft(topic);
+      return;
+    }
+    if (!window.confirm(`确定删除「${job.input_title}」的失败记录？`)) return;
+    const { error: deleteError } = await db.from("topic_generation_jobs").delete().eq("id", job.id).is("topic_id", null);
+    if (deleteError) { setError(deleteError.message); return; }
+    await loadJobs();
   }
   async function updatePoint(point: KnowledgePoint, content: string) {
     if (!db || isAdmin !== true) return false;
@@ -906,7 +959,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : readerTopicIds ? readerTopicIds.map(id => publishedTopics.find(topic => topic.id === id)).filter((topic): topic is Topic => !!topic) : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><TopicCategoryEditor key={selected.id} categoryId={selected.category_id} categories={categories} canEdit={isAdmin === true && !offline && selected.user_id === user.id} onSave={updateTopicCategory} /><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑G</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
       {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && !offline && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
     </main><nav className="mobile-nav" aria-label="手机导航"><button className={view === "home" ? "active" : ""} onClick={() => navigate("home")}><span aria-hidden="true">⌂</span>首页</button><button className={view === "library" ? "active" : ""} onClick={() => navigate("library")}><span aria-hidden="true">▤</span>知识库</button><button className={view === "browse" ? "active" : ""} onClick={() => navigate("browse")}><span aria-hidden="true">▧</span>卡片</button><button className={view === "profile" ? "active" : ""} onClick={() => navigate("profile")}><span aria-hidden="true">◉</span>我的</button></nav>
-    {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} modelGroups={modelGroups} modelGroupsStatus={modelGroupsStatus} selectedModelGroupId={selectedModelGroupId} onSelectModelGroup={selectModelGroup} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onDelete={id => { const topic = topics.find(item => item.id === id); if (topic) void deleteDraft(topic); }} retryingJobId={retryingJobId} />}
+    {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} modelGroups={modelGroups} modelGroupsStatus={modelGroupsStatus} selectedModelGroupId={selectedModelGroupId} onSelectModelGroup={selectModelGroup} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onRetryAll={() => void retryAllJobs()} retryAllProgress={retryAllProgress} onDelete={job => void deleteJob(job)} retryingJobId={retryingJobId} />}
   </div>;
 }
 
@@ -924,7 +977,7 @@ function ReaderLoading({ full = false }: { full?: boolean }) {
   </div>;
 }
 
-function TaskDrawer({ jobs, modelGroups, modelGroupsStatus, selectedModelGroupId, onSelectModelGroup, onClose, onOpen, onRetry, onDelete, retryingJobId }: { jobs: GenerationJob[]; modelGroups: AiModelGroup[]; modelGroupsStatus: "loading" | "loaded" | "error"; selectedModelGroupId: string; onSelectModelGroup: (id: string) => void; onClose: () => void; onOpen: (id: string) => void; onRetry: (job: GenerationJob) => void; onDelete: (topicId: string) => void; retryingJobId: string | null }) {
+function TaskDrawer({ jobs, modelGroups, modelGroupsStatus, selectedModelGroupId, onSelectModelGroup, onClose, onOpen, onRetry, onRetryAll, retryAllProgress, onDelete, retryingJobId }: { jobs: GenerationJob[]; modelGroups: AiModelGroup[]; modelGroupsStatus: "loading" | "loaded" | "error"; selectedModelGroupId: string; onSelectModelGroup: (id: string) => void; onClose: () => void; onOpen: (id: string) => void; onRetry: (job: GenerationJob) => void; onRetryAll: () => void; retryAllProgress: RetryAllProgress | null; onDelete: (job: GenerationJob) => void; retryingJobId: string | null }) {
   const [filter, setFilter] = useState<"all" | "active" | "failed" | "completed">("all");
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { closeButtonRef.current?.focus(); }, []);
@@ -936,12 +989,21 @@ function TaskDrawer({ jobs, modelGroups, modelGroupsStatus, selectedModelGroupId
   const visible = jobs.filter(job => filter === "all" || (filter === "active" ? job.status === "pending" || job.status === "running" : job.status === filter));
   const activeCount = jobs.filter(job => job.status === "pending" || job.status === "running").length;
   const failedCount = jobs.filter(job => job.status === "failed").length;
-  return <div className="task-drawer-layer"><button className="task-drawer-backdrop" aria-label="关闭任务中心" onClick={onClose} /><aside className="task-drawer" role="dialog" aria-modal="true" aria-label="生成任务中心"><div className="task-drawer-head"><div><span>生成任务中心</span><h2>专题生成进度</h2></div><button ref={closeButtonRef} onClick={onClose} aria-label="关闭任务中心">×</button></div><div className="task-drawer-summary"><strong>{activeCount}</strong><span>进行中</span><strong>{failedCount}</strong><span>待处理失败</span></div><label className="task-model-group">本次重试使用的模型分组<select value={modelGroups.some(group => group.id === selectedModelGroupId) ? selectedModelGroupId : ""} onChange={event => onSelectModelGroup(event.target.value)} disabled={modelGroupsStatus !== "loaded" || !modelGroups.length}><option value="" disabled>{modelGroupsStatus === "loading" ? "正在加载分组…" : "请选择模型分组"}</option>{modelGroups.map(group => <option key={group.id} value={group.id}>{group.name} · {group.model}</option>)}</select></label><div className="task-filters" role="group" aria-label="任务筛选">{([ ["all", "全部"], ["active", "进行中"], ["failed", "失败"], ["completed", "已完成"] ] as const).map(([value, label]) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>)}</div><JobHistory jobs={visible} onOpen={onOpen} onRetry={onRetry} onDelete={onDelete} retryingJobId={retryingJobId} canRetry={modelGroupsStatus === "loaded" && !!selectedModelGroupId} /></aside></div>;
+  const bulkRunning = retryAllProgress?.running === true;
+  const canRetry = modelGroupsStatus === "loaded" && !!selectedModelGroupId && !bulkRunning;
+  return <div className="task-drawer-layer"><button className="task-drawer-backdrop" aria-label="关闭任务中心" onClick={onClose} /><aside className="task-drawer" role="dialog" aria-modal="true" aria-label="生成任务中心">
+    <div className="task-drawer-head"><div><span>生成任务中心</span><h2>专题生成进度</h2></div><button ref={closeButtonRef} onClick={onClose} aria-label="关闭任务中心">×</button></div>
+    <div className="task-drawer-summary"><strong>{activeCount}</strong><span>进行中</span><strong>{failedCount}</strong><span>待处理失败</span></div>
+    <label className="task-model-group">本次重试使用的模型分组<select value={modelGroups.some(group => group.id === selectedModelGroupId) ? selectedModelGroupId : ""} onChange={event => onSelectModelGroup(event.target.value)} disabled={modelGroupsStatus !== "loaded" || !modelGroups.length || bulkRunning}><option value="" disabled>{modelGroupsStatus === "loading" ? "正在加载分组…" : "请选择模型分组"}</option>{modelGroups.map(group => <option key={group.id} value={group.id}>{group.name} · {group.model}</option>)}</select></label>
+    <div className="task-bulk-actions"><button type="button" onClick={onRetryAll} disabled={!canRetry || !!retryingJobId || failedCount === 0}>{bulkRunning ? `提交中 ${retryAllProgress?.attempted || 0}/${retryAllProgress?.total || 0}` : `全部重试（${failedCount}）`}</button>{retryAllProgress && <p role="status" aria-live="polite">{bulkRunning ? `已提交 ${retryAllProgress.started} 项，处理 ${retryAllProgress.attempted}/${retryAllProgress.total} 项。` : `${retryAllProgress.message} 已提交 ${retryAllProgress.started}/${retryAllProgress.total} 项。`}</p>}</div>
+    <div className="task-filters" role="group" aria-label="任务筛选">{([ ["all", "全部"], ["active", "进行中"], ["failed", "失败"], ["completed", "已完成"] ] as const).map(([value, label]) => <button key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>)}</div>
+    <JobHistory jobs={visible} onOpen={onOpen} onRetry={onRetry} onDelete={onDelete} retryingJobId={retryingJobId} canRetry={canRetry} bulkRetrying={bulkRunning} />
+  </aside></div>;
 }
 
-function JobHistory({ jobs, onOpen, onRetry, onDelete, retryingJobId, canRetry }: { jobs: GenerationJob[]; onOpen: (id: string) => void; onRetry: (job: GenerationJob) => void; onDelete: (topicId: string) => void; retryingJobId: string | null; canRetry: boolean }) {
+function JobHistory({ jobs, onOpen, onRetry, onDelete, retryingJobId, canRetry, bulkRetrying }: { jobs: GenerationJob[]; onOpen: (id: string) => void; onRetry: (job: GenerationJob) => void; onDelete: (job: GenerationJob) => void; retryingJobId: string | null; canRetry: boolean; bulkRetrying: boolean }) {
   if (!jobs.length) return <div className="job-empty">还没有生成记录。创建专题后可在这里查看进度。</div>;
-  return <div className="job-history">{jobs.map(job => <JobItem key={job.id} job={job} onOpen={onOpen} onRetry={onRetry} onDelete={onDelete} retrying={retryingJobId === job.id} canRetry={canRetry} />)}</div>;
+  return <div className="job-history">{jobs.map(job => <JobItem key={job.id} job={job} onOpen={onOpen} onRetry={onRetry} onDelete={onDelete} retrying={retryingJobId === job.id} canRetry={canRetry} bulkRetrying={bulkRetrying} />)}</div>;
 }
 
 function jobErrorText(job: GenerationJob | undefined) {
@@ -955,14 +1017,14 @@ function jobErrorText(job: GenerationJob | undefined) {
   return message;
 }
 
-function JobItem({ job, onOpen, onRetry, onDelete, retrying, canRetry }: { job: GenerationJob; onOpen: (id: string) => void; onRetry: (job: GenerationJob) => void; onDelete: (topicId: string) => void; retrying: boolean; canRetry: boolean }) {
+function JobItem({ job, onOpen, onRetry, onDelete, retrying, canRetry, bulkRetrying }: { job: GenerationJob; onOpen: (id: string) => void; onRetry: (job: GenerationJob) => void; onDelete: (job: GenerationJob) => void; retrying: boolean; canRetry: boolean; bulkRetrying: boolean }) {
   const label = { pending: "等待中", running: "生成中", completed: "已完成", failed: "失败" }[job.status];
   const detail = job.status === "pending" ? "等待开始" : job.status === "running"
     ? job.raw_output?.stage === "generating_sections"
       ? `章节 ${job.raw_output.completed_sections || 0}/${job.raw_output.total_sections || "…"}`
       : "正在构建目录"
     : job.status === "failed" ? jobErrorText(job) : "可在草稿箱检查内容";
-  return <article className={`task-row task-${job.status}`}><div className="task-row-top"><span className={`job-dot ${job.status}`} aria-hidden="true" /><strong>{job.input_title}</strong><span className={`job-list-status ${job.status}`}>{label}</span></div><p>{job.status === "failed" ? "生成未完成，可以重新尝试。" : detail}</p><div className="task-row-bottom"><time>{new Date(job.created_at).toLocaleString("zh-CN")}</time>{job.status === "failed" ? <div className="task-row-actions"><button className="task-retry" disabled={retrying || !canRetry} onClick={() => onRetry(job)}>{retrying ? "重试中…" : "重新生成"}</button>{job.topic_id && !job.raw_output?.regeneration && <button className="task-delete" disabled={retrying} onClick={() => onDelete(job.topic_id!)}>删除任务</button>}</div> : job.status === "completed" && job.topic_id ? <button onClick={() => onOpen(job.topic_id!)}>打开专题 →</button> : null}</div>{job.status === "failed" && <details className="task-error-details"><summary>查看错误详情</summary><p>{detail}</p></details>}</article>;
+  return <article className={`task-row task-${job.status}`}><div className="task-row-top"><span className={`job-dot ${job.status}`} aria-hidden="true" /><strong>{job.input_title}</strong><span className={`job-list-status ${job.status}`}>{label}</span></div><p>{job.status === "failed" ? job.raw_output?.stage === "duplicate_title" ? detail : "生成未完成，可以重新尝试。" : detail}</p><div className="task-row-bottom"><time>{new Date(job.created_at).toLocaleString("zh-CN")}</time>{job.status === "failed" ? <div className="task-row-actions"><button className="task-retry" disabled={retrying || !canRetry} onClick={() => onRetry(job)}>{retrying ? "重试中…" : "重新生成"}</button>{!job.raw_output?.regeneration && <button className="task-delete" disabled={retrying || bulkRetrying} onClick={() => onDelete(job)}>删除任务</button>}</div> : job.status === "completed" && job.topic_id ? <button onClick={() => onOpen(job.topic_id!)}>打开专题 →</button> : null}</div>{job.status === "failed" && <details className="task-error-details"><summary>查看错误详情</summary><p>{detail}</p></details>}</article>;
 }
 
 const noInsight: TopicInsight = { pointCount: 0, verifiedCount: 0, ratedCount: 0, masteredCount: 0, weakCount: 0, viewedCount: 0, lastViewedAt: null, lastReviewedAt: null };
@@ -999,6 +1061,13 @@ function RecommendationSection({ points, activities, topics, categories, categor
 function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, topicsStatus, searchPoints, query, categoryName, canManage, userId, onCategoriesChanged, onOpen }: { topics: Topic[]; drafts: Topic[]; categories: Category[]; insights: Record<string, TopicInsight>; insightsStatus: "loading" | "loaded" | "error"; topicsStatus: "loading" | "loaded" | "error"; searchPoints: SearchPoint[]; query: string; categoryName: (id: string | null) => string; canManage: boolean; userId: string; onCategoriesChanged: () => Promise<void>; onOpen: (id: string, ids: string[]) => void }) {
   const [currentTime, setCurrentTime] = useState(0);
   useEffect(() => { queueMicrotask(() => setCurrentTime(Date.now())); }, []);
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  useEffect(() => {
+    const updateVisibility = () => setShowBackToTop(window.scrollY > 320);
+    updateVisibility();
+    window.addEventListener("scroll", updateVisibility, { passive: true });
+    return () => window.removeEventListener("scroll", updateVisibility);
+  }, []);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [readingFilter, setReadingFilter] = useState("all");
   const [sort, setSort] = useState("recent");
@@ -1084,6 +1153,7 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
     })}</div> : <div className="management-empty">{topics.length ? "没有符合筛选条件的已发布专题。" : "知识库还没有专题。生成并发布第一份内容后，会在这里开始积累。"}</div>}
     {topicsStatus === "loaded" && insightsStatus === "loaded" && displayed.length < visible.length && <div ref={loadMoreRef} className="library-load-more"><span>已显示 {displayed.length} / {visible.length} 个专题</span><button type="button" onClick={() => setVisibleCount(count => Math.min(count + LIBRARY_BATCH_SIZE, visible.length))}>加载更多专题</button></div>}
     {matchingDrafts.length > 0 && <div className="global-draft-results"><h2>草稿中的结果</h2>{matchingDrafts.map(topic => <a key={topic.id} href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer"><span className="category-tag">{categoryName(topic.category_id)}</span><strong>{topic.title}</strong><span>新标签页完善</span></a>)}</div>}
+    {showBackToTop && <button type="button" className="library-back-to-top" aria-label="返回顶部" title="返回顶部" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 14 7-7 7 7" /><path d="M12 7v12" /></svg></button>}
   </section>;
 }
 

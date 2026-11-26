@@ -20,42 +20,61 @@ export async function POST(request: Request) {
   if (!profile.is_admin) return Response.json({ error: "只有管理员可以重试生成任务" }, { status: 403 });
   const { data: job, error: jobError } = await db.from("topic_generation_jobs")
     .select("id,topic_id,input_title,status,raw_output").eq("id", body.jobId).eq("user_id", auth.user.id).single();
-  if (jobError || !job || !job.topic_id) return Response.json({ error: "找不到这项生成任务" }, { status: 404 });
+  if (jobError || !job) return Response.json({ error: "找不到这项生成任务" }, { status: 404 });
   let config;
   try { config = await resolveModelConfig(db, auth.user.id, body.groupId); }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "模型分组不可用" }, { status: 400 }); }
   if (job.status !== "failed") return Response.json({ error: "只有失败的任务可以重试" }, { status: 409 });
-  const { data: topic, error: topicError } = await db.from("topics")
-    .select("id,title,status,generation_status").eq("id", job.topic_id).eq("user_id", auth.user.id).single();
-  if (topicError || !topic) return Response.json({ error: "找不到对应的专题" }, { status: 404 });
   const replaceExisting = job.raw_output?.regeneration === true;
-  if (replaceExisting ? topic.status !== "published" : topic.status !== "draft" || topic.generation_status !== "failed") {
-    return Response.json({ error: "这个专题当前不能重新生成" }, { status: 409 });
+  const duplicateOnly = !job.topic_id && job.raw_output?.stage === "duplicate_title";
+  if (!job.topic_id && !duplicateOnly) return Response.json({ error: "找不到对应的专题" }, { status: 404 });
+  if (!replaceExisting) {
+    const { data: existing, error: duplicateError } = await db.from("topics")
+      .select("id").neq("status", "archived").neq("generation_status", "failed").eq("title", job.input_title).limit(1);
+    if (duplicateError) return Response.json({ error: "检查同名专题失败，请稍后重试" }, { status: 503 });
+    if (existing?.length) return Response.json({ error: "仍有同名专题正在生成或等待处理，请先处理重名后再试" }, { status: 409 });
   }
-  const { data: activeJobs, error: activeError } = await db.from("topic_generation_jobs")
-    .select("id").eq("topic_id", topic.id).in("status", ["pending", "running"]).limit(1);
-  if (activeError) return Response.json({ error: activeError.message }, { status: 500 });
-  if (activeJobs?.length) return Response.json({ error: "这个专题正在生成中" }, { status: 409 });
+  let topicId = job.topic_id;
+  if (topicId) {
+    const { data: topic, error: topicError } = await db.from("topics")
+      .select("id,status,generation_status").eq("id", topicId).eq("user_id", auth.user.id).single();
+    if (topicError || !topic) return Response.json({ error: "找不到对应的专题" }, { status: 404 });
+    if (replaceExisting ? topic.status !== "published" : topic.status !== "draft" || topic.generation_status !== "failed") {
+      return Response.json({ error: "这个专题当前不能重新生成" }, { status: 409 });
+    }
+    const { data: activeJobs, error: activeError } = await db.from("topic_generation_jobs")
+      .select("id").eq("topic_id", topicId).in("status", ["pending", "running"]).limit(1);
+    if (activeError) return Response.json({ error: activeError.message }, { status: 500 });
+    if (activeJobs?.length) return Response.json({ error: "这个专题正在生成中" }, { status: 409 });
+  } else {
+    const { data: topic, error: topicError } = await db.from("topics").insert({
+      user_id: auth.user.id, title: job.input_title, status: "draft", generation_status: "pending",
+    }).select("id").single();
+    if (topicError || !topic) return Response.json({ error: topicError?.message || "创建专题失败" }, { status: 500 });
+    topicId = topic.id;
+  }
 
   const { data: restarted, error: restartError } = await db.from("topic_generation_jobs").update({
+    topic_id: topicId,
     status: "pending", error_message: null, raw_output: replaceExisting ? { regeneration: true } : null, finished_at: null,
     created_at: new Date().toISOString(), model_name: config.model,
     model_group_id: body.groupId === "env" ? null : body.groupId, prompt_version: "v6",
   }).eq("id", job.id).eq("status", "failed").select("id").maybeSingle();
+  if (duplicateOnly && (restartError || !restarted)) await db.from("topics").delete().eq("id", topicId);
   if (restartError) return Response.json({ error: restartError.message }, { status: 500 });
   if (!restarted) return Response.json({ error: "任务已经开始重试" }, { status: 409 });
 
-  if (!replaceExisting) {
-    const { error: clearError } = await db.from("knowledge_points").delete().eq("topic_id", topic.id);
+  if (!replaceExisting && !duplicateOnly) {
+    const { error: clearError } = await db.from("knowledge_points").delete().eq("topic_id", topicId);
     const { error: resetError } = clearError ? { error: clearError } : await db.from("topics").update({
       generation_status: "pending", summary: null,
-    }).eq("id", topic.id);
+    }).eq("id", topicId);
     if (resetError) {
       await db.from("topic_generation_jobs").update({ status: "failed", error_message: resetError.message, finished_at: new Date().toISOString() }).eq("id", job.id);
       return Response.json({ error: "重试准备失败，请稍后再试" }, { status: 500 });
     }
   }
 
-  after(() => runGenerationJob({ token, topicId: topic.id, jobId: job.id, title: topic.title, config, replaceExisting }));
-  return Response.json({ topicId: topic.id, jobId: job.id, status: "pending" }, { status: 202 });
+  after(() => runGenerationJob({ token, topicId, jobId: job.id, title: job.input_title, config, replaceExisting }));
+  return Response.json({ topicId, jobId: job.id, status: "pending" }, { status: 202 });
 }

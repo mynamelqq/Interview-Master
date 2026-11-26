@@ -10,9 +10,19 @@ type JobInput = { token: string; topicId: string; jobId: string; title: string; 
 export async function runGenerationJob({ token, topicId, jobId, title, config, replaceExisting = false }: JobInput) {
   const db = getRequestClient(token);
   let outline: Outline | null = null;
+  let failureStage = "generation_failed";
   try {
     const { error: startError } = await db.from("topic_generation_jobs").update({ status: "running" }).eq("id", jobId);
     if (startError) throw startError;
+    if (!replaceExisting) {
+      const { data: existing, error: duplicateError } = await db.from("topics")
+        .select("id").neq("id", topicId).neq("status", "archived").neq("generation_status", "failed").eq("title", title).limit(1);
+      if (duplicateError) throw duplicateError;
+      if (existing?.length) {
+        failureStage = "duplicate_title";
+        throw new Error("已有同名专题，已跳过生成");
+      }
+    }
     const { data: categoryRows, error: categoryError } = await db.from("categories").select("id,name,parent_id").order("sort_order").order("name");
     if (categoryError) throw categoryError;
     const categories = (categoryRows || []) as CategoryOption[];
@@ -60,18 +70,21 @@ export async function runGenerationJob({ token, topicId, jobId, title, config, r
       const { error: topicError } = await db.from("topics").update({ summary: outline.summary, category_id: categoryId, generation_status: "completed" }).eq("id", topicId);
       if (topicError) throw topicError;
     }
+    if (!replaceExisting) {
+      const { data: existing, error: duplicateCheckError } = await db.from("topics")
+        .select("id").neq("id", topicId).neq("status", "archived").neq("generation_status", "failed").eq("title", title).limit(1);
+      if (duplicateCheckError) throw duplicateCheckError;
+      if (existing?.length) {
+        failureStage = "duplicate_title";
+        throw new Error("已有同名专题，已跳过发布");
+      }
+    }
     const { error: finishError } = await db.from("topic_generation_jobs").update({ status: "completed", raw_output: { stage: "completed", outline, regeneration: replaceExisting }, finished_at: new Date().toISOString() }).eq("id", jobId);
     if (finishError) throw finishError;
     if (!replaceExisting) {
-      const { data: existing, error: duplicateCheckError } = await db.from("topics")
-      .select("id").eq("status", "published").eq("title", title).limit(1);
-      if (duplicateCheckError) {
-        console.error("无法检查知识库同名专题", duplicateCheckError);
-      } else if (!existing?.length) {
-        const { error: publishError } = await db.from("topics")
-          .update({ status: "published" }).eq("id", topicId).eq("status", "draft").eq("generation_status", "completed");
-        if (publishError) console.error("专题已生成，但自动发布失败", publishError);
-      }
+      const { error: publishError } = await db.from("topics")
+        .update({ status: "published" }).eq("id", topicId).eq("status", "draft").eq("generation_status", "completed");
+      if (publishError) console.error("专题已生成，但自动发布失败", publishError);
     }
   } catch (error) {
     const errorLike = error !== null && typeof error === "object" ? error as { message?: unknown; details?: unknown } : null;
@@ -88,7 +101,7 @@ export async function runGenerationJob({ token, topicId, jobId, title, config, r
       error_message: message,
       raw_output: error instanceof AiOutputError ? { stage: error.stage, outline, model_output: error.rawOutput, regeneration: replaceExisting }
         : error instanceof AiRequestError ? { stage: error.stage, outline, http_status: error.status, request_id: error.requestId, regeneration: replaceExisting }
-        : { stage: "generation_failed", outline, regeneration: replaceExisting },
+        : { stage: failureStage, outline, regeneration: replaceExisting },
       finished_at: new Date().toISOString(),
     }).eq("id", jobId);
   }
