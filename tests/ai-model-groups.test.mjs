@@ -1,6 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decryptApiKey, encryptApiKey, resolveModelConfig, validateBaseUrl } from "../lib/ai-model-groups.ts";
+import { decryptApiKey, encryptApiKey, followupModelConfig, resolveModelConfig, validateBaseUrl } from "../lib/ai-model-groups.ts";
+
+test("followup answers require their own fast model configuration", () => {
+  const names = ["AI_FOLLOWUP_BASE_URL", "AI_FOLLOWUP_MODEL", "AI_FOLLOWUP_API_KEY"];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  try {
+    for (const name of names) delete process.env[name];
+    assert.throws(() => followupModelConfig(), /AI_FOLLOWUP_BASE_URL/);
+    process.env.AI_FOLLOWUP_BASE_URL = "https://fast.example.com/v1";
+    process.env.AI_FOLLOWUP_MODEL = "fast-model";
+    process.env.AI_FOLLOWUP_API_KEY = "fast-secret";
+    assert.deepEqual(followupModelConfig(), { baseUrl: "https://fast.example.com/v1", model: "fast-model", apiKey: "fast-secret" });
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
+});
 import { generateOutline } from "../lib/ai.ts";
 
 test("model group API keys are encrypted with authenticated encryption", () => {

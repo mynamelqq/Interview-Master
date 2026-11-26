@@ -43,6 +43,24 @@ function nonemptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+export function normalizeInterviewQuestionAnswer(data: unknown): string {
+  const answer = object(data)?.answer;
+  if (typeof answer !== "string" || !answer.trim() || Array.from(answer.trim()).length > 300) {
+    throw new AiOutputError("追问答案须为 1 至 300 字", "question_answer_validation_failed", data);
+  }
+  return answer.trim();
+}
+
+export async function generateInterviewQuestionAnswer(topic: string, point: string, question: string, context: string, config?: AiModelConfig): Promise<string> {
+  const { data } = await completion(
+    INTERVIEW_SYSTEM,
+    `专题：${topic}。知识点：${point}。相关正文：${context.slice(0, 4000)}。面试追问：${question}。请直接回答这道追问，简短、准确、适合面试口头表达，不超过 300 个汉字或字符。只返回 {"answer":"答案"}。`,
+    "question_answer_validation_failed",
+    config,
+  );
+  return normalizeInterviewQuestionAnswer(data);
+}
+
 function named(value: unknown): string | null {
   if (typeof value === "string") return nonemptyString(value);
   const entry = object(value);
@@ -58,7 +76,7 @@ async function completion(system: string, user: string, stage: string, config?: 
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model, response_format: { type: "json_object" }, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
-    signal: AbortSignal.timeout(2000000),
+    signal: AbortSignal.timeout(stage === "question_answer_validation_failed" ? 60000 : 2000000),
   });
   if (!response.ok) {
     const body = await response.text();
@@ -77,7 +95,7 @@ async function completion(system: string, user: string, stage: string, config?: 
     }
     detail = detail.replace(/\s+/g, " ").slice(0, 500);
     const requestId = response.headers.get("x-request-id") || response.headers.get("x-trace-id");
-    const phase = stage === "outline_validation_failed" ? "目录" : "章节";
+    const phase = stage === "outline_validation_failed" ? "目录" : stage === "question_answer_validation_failed" ? "追问答案" : "章节";
     const message = `AI ${phase}请求失败（${response.status}）${detail ? `：${detail}` : ""}${requestId ? `；请求 ID：${requestId}` : ""}`;
     throw new AiRequestError(message, stage.replace(/_validation_failed$/, "_request_failed"), response.status, requestId);
   }

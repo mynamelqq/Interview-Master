@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MarkdownContent } from "@/components/markdown-content";
 import { PointContent } from "@/components/point-content";
+import { InterviewFollowups } from "@/components/interview-followups";
 import { TopicAnswerFocus } from "@/components/topic-answer-focus";
 import { readTopicAnswer } from "@/lib/topic-answer";
 import type { KnowledgePoint, Topic } from "@/lib/types";
@@ -27,7 +28,7 @@ const options = [
   { key: "width", label: "正文宽度", values: [["narrow", "窄"], ["standard", "标准"], ["wide", "宽"]] },
 ] as const;
 
-export function FocusReader({ topic, category, sections, points, notes, userId, initialPointId, preferences, onPreferencesChange, savedOffline, onToggleOffline, onOpenMenu, onBack, backLabel = "知识库", onExit }: {
+export function FocusReader({ topic, category, sections, points, notes, userId, initialPointId, preferences, onPreferencesChange, savedOffline, onToggleOffline, onOpenMenu, onBack, backLabel = "知识库", canGenerateAnswers, onGenerateAnswer, onExit }: {
   topic: Topic;
   category: string;
   sections: KnowledgePoint[];
@@ -42,6 +43,8 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
   onOpenMenu: () => void;
   onBack: () => void;
   backLabel?: string;
+  canGenerateAnswers: boolean;
+  onGenerateAnswer: (point: KnowledgePoint, question: string) => Promise<string | null>;
   onExit: (pointId: string | null) => void;
 }) {
   const [tocOpen, setTocOpen] = useState(false);
@@ -196,7 +199,7 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
     {!tocOpen && <button className="focus-back-to-top" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑</button>}
 
     <article className="focus-article"><div className="focus-title"><div className="focus-category">{category} · 专题阅读</div><h1>{topic.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} />{topic.summary && <p>{topic.summary}</p>}<div className="focus-progress-caption"><span>阅读进度 <strong>{progress}%</strong></span><span>专注用时 <strong>{String(Math.floor(readSeconds / 60)).padStart(2, "0")}:{String(readSeconds % 60).padStart(2, "0")}</strong></span></div>{bookmark && <button className="focus-resume" onClick={resume}>继续上次阅读（{bookmark.progress}%） →</button>}</div>
-      {sections.length ? sections.map(section => <section className="focus-chapter" id={`focus-section-${section.id}`} key={section.id}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <section className="focus-point" id={`focus-point-${point.id}`} key={point.id}><h3>{point.title}</h3><PointContent content={point.content_md || "暂无正文"} />{point.example_md && <div className="focus-example"><MarkdownContent content={point.example_md} /></div>}{point.key_takeaways?.length > 0 && <div className="focus-takeaways"><strong>补充要点</strong><ul>{point.key_takeaways.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}{point.common_mistakes?.length > 0 && <div className="focus-mistakes"><strong>易错点</strong><ul>{point.common_mistakes.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}{point.interview_questions?.length > 0 && <details className="focus-questions"><summary>面试追问 · {point.interview_questions.length} 题</summary><ul>{point.interview_questions.map((item, index) => <li key={index}>{item}</li>)}</ul></details>}</section>)}{notes[section.id] && <details className="focus-note"><summary>本章笔记</summary><MarkdownContent content={notes[section.id]} prose /></details>}</section>) : <p className="focus-empty">专题还没有知识点，生成完成后可以在这里连续阅读。</p>}
+      {sections.length ? sections.map(section => <section className="focus-chapter" id={`focus-section-${section.id}`} key={section.id}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <section className="focus-point" id={`focus-point-${point.id}`} key={point.id}><h3>{point.title}</h3><PointContent content={point.content_md || "暂无正文"} />{point.example_md && <div className="focus-example"><MarkdownContent content={point.example_md} /></div>}{point.key_takeaways?.length > 0 && <div className="focus-takeaways"><strong>补充要点</strong><ul>{point.key_takeaways.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}{point.common_mistakes?.length > 0 && <div className="focus-mistakes"><strong>易错点</strong><ul>{point.common_mistakes.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}{point.interview_questions?.length > 0 && <details className="focus-questions"><summary>面试追问 · {point.interview_questions.length} 题</summary><InterviewFollowups point={point} canGenerate={canGenerateAnswers} onGenerate={onGenerateAnswer} /></details>}</section>)}{notes[section.id] && <details className="focus-note"><summary>本章笔记</summary><MarkdownContent content={notes[section.id]} prose /></details>}</section>) : <p className="focus-empty">专题还没有知识点，生成完成后可以在这里连续阅读。</p>}
     </article>
     {ordered.length > 0 && <nav className="focus-point-nav" aria-label="知识点导航"><button disabled={activeIndex <= 0} onClick={() => jump(`focus-point-${ordered[activeIndex - 1]?.id}`)}>← 上一个</button><span>{activeIndex + 1} / {ordered.length}</span><button disabled={activeIndex >= ordered.length - 1} onClick={() => jump(`focus-point-${ordered[activeIndex + 1]?.id}`)}>下一个 →</button></nav>}
   </div>;

@@ -10,6 +10,7 @@ export type KnowledgePoint = {
   id: string; topic_id: string; parent_id: string | null; title: string;
   sort_order: number; content_md: string | null; example_md: string | null;
   key_takeaways: string[]; interview_questions: string[];
+  interview_question_answers?: Record<string, string>;
   common_mistakes: string[];
   verification_status: "ai_draft" | "checked" | "verified";
 };

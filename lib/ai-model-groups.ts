@@ -31,6 +31,14 @@ export function environmentModelConfig(): AiModelConfig | null {
   return apiKey && model ? { baseUrl: process.env.AI_BASE_URL || "https://api.openai.com/v1", model, apiKey } : null;
 }
 
+export function followupModelConfig(): AiModelConfig {
+  const baseUrl = process.env.AI_FOLLOWUP_BASE_URL;
+  const model = process.env.AI_FOLLOWUP_MODEL;
+  const apiKey = process.env.AI_FOLLOWUP_API_KEY;
+  if (!baseUrl || !model || !apiKey) throw new Error("请配置 AI_FOLLOWUP_BASE_URL、AI_FOLLOWUP_MODEL 和 AI_FOLLOWUP_API_KEY");
+  return { baseUrl: validateBaseUrl(baseUrl), model, apiKey };
+}
+
 export function validateBaseUrl(input: string): string {
   const parsed = new URL(input.trim());
   if (parsed.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname))) throw new Error("模型 URL 必须使用 HTTPS；本地开发可使用 localhost HTTP");

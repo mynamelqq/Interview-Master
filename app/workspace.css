@@ -60,6 +60,22 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 @media(max-width:760px){.reader-toolbar-actions .reader-top-toggle{display:inline-block;position:fixed;z-index:29;right:16px;bottom:max(72px,calc(56px + env(safe-area-inset-bottom)));min-height:44px;padding:10px 16px;background:white;color:#286bd4;border-color:#cbdcf5;box-shadow:0 6px 18px rgba(32,41,56,.18)}}
 .regenerate-reader-btn{margin-left:auto;padding:8px 11px;border:1px solid #cbdcf5;border-radius:7px;background:#f4f8ff;color:#286bd4;font-size:12px;font-weight:700}
 .regenerate-reader-btn:hover:not(:disabled){background:#eaf1fe}
+.interview-followup-list{overflow:visible}
+.interview-followup-item{position:relative;margin:6px 0}
+.interview-question-answer{border:0;background:none;color:inherit;font:inherit;text-align:left;padding:0;cursor:help;text-decoration:underline;text-decoration-style:dotted;text-decoration-color:#a9b5c6;text-underline-offset:4px}
+.interview-question-answer:hover{color:#285b9c;text-decoration-color:currentColor}
+.interview-question-answer:focus-visible,.interview-generate-answer:focus-visible{outline:2px solid #3978e8;outline-offset:3px;border-radius:2px}
+.interview-answer-mark{font-size:.75em;color:#8a98aa;white-space:nowrap}
+.interview-answer-wrap{display:inline}
+.interview-answer-tooltip{display:none;position:absolute;z-index:12;top:100%;left:0;width:min(440px,calc(100vw - 64px));padding:14px 16px;border:1px solid #e0e5ec;border-radius:7px;background:#fff;color:#334155;box-shadow:0 7px 22px #2029381c;font-size:14px;font-weight:400;line-height:1.75;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:760px){.interview-answer-tooltip{max-height:65dvh;overflow-y:auto}}
+.interview-followup-item.answer-open .interview-answer-tooltip{display:block}
+@media(hover:hover){.interview-answer-wrap:hover .interview-answer-tooltip{display:block}}
+.interview-generate-answer{margin-left:9px;padding:1px 4px;border:0;background:transparent;color:#4875a9;font-size:12px;cursor:pointer}
+.interview-generate-answer:hover{text-decoration:underline}
+.interview-generate-answer:disabled{opacity:.6;cursor:wait}
+.interview-answer-error{display:block;color:#af4236;font-size:12px}
+.focus-reader .interview-answer-tooltip{color:#334155;background:#fff}
 @media(max-width:760px){.regenerate-reader-btn{margin-left:0}}
 .chapter-note{margin:30px 0 42px;padding:20px;border:1px solid #e5e9ef;border-radius:8px;background:#fafcff}
 .sidebar-jobs{min-width:0;max-width:100%;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable}.sidebar-jobs .job-history,.mobile-jobs .job-history{min-width:0;grid-template-columns:minmax(0,1fr)}.sidebar-jobs .job-item,.mobile-jobs .job-item{min-width:0;max-width:100%}.sidebar-jobs .job-item .job-item-summary,.mobile-jobs .job-item .job-item-summary{width:100%;max-width:100%;overflow:hidden}.sidebar-jobs .job-item-summary strong,.mobile-jobs .job-item-summary strong{min-width:0;white-space:nowrap!important;text-overflow:ellipsis;overflow:hidden}
