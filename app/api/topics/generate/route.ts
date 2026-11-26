@@ -1,5 +1,5 @@
 import { after } from "next/server";
-import { runGenerationJob } from "@/lib/generation-job";
+import { dispatchGenerationJobs } from "@/lib/generation-queue";
 import { getRequestClient } from "@/lib/supabase";
 import { resolveModelConfig } from "@/lib/ai-model-groups";
 
@@ -25,6 +25,8 @@ export async function POST(request: Request) {
   let config;
   try { config = await resolveModelConfig(db, auth.user.id, body.groupId); }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "模型分组不可用" }, { status: 400 }); }
+  const { error: queueError } = await db.rpc("claim_generation_jobs", { p_limit: 0 });
+  if (queueError) return Response.json({ error: `生成队列不可用（${queueError.code}）：${queueError.message}` }, { status: 503 });
   const normalizedTitles = titles.map(title => title.trim());
   const { data: existingTopics, error: duplicateCheckError } = await db.from("topics")
     .select("title").neq("status", "archived").neq("generation_status", "failed").in("title", [...new Set(normalizedTitles)]);
@@ -55,7 +57,7 @@ export async function POST(request: Request) {
     }
     queuedTitles.add(title);
     created.push({ title, topicId: topic.id, jobId: job.id });
-    after(() => runGenerationJob({ token, topicId: topic.id, jobId: job.id, title, config }));
   }
+  if (created.length) after(() => dispatchGenerationJobs(token));
   return Response.json({ created, failed, status: created.length ? "pending" : "failed", ...(titles.length === 1 && created[0] ? { topicId: created[0].topicId, jobId: created[0].jobId } : {}) }, { status: created.length ? 202 : failed.some(item => item.jobId) ? 200 : 500 });
 }

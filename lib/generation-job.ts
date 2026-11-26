@@ -9,10 +9,11 @@ type JobInput = { token: string; topicId: string; jobId: string; title: string; 
 
 export async function runGenerationJob({ token, topicId, jobId, title, config, replaceExisting = false }: JobInput) {
   const db = getRequestClient(token);
+  const startedAt = new Date().toISOString();
   let outline: Outline | null = null;
   let failureStage = "generation_failed";
   try {
-    const { error: startError } = await db.from("topic_generation_jobs").update({ status: "running" }).eq("id", jobId);
+    const { error: startError } = await db.from("topic_generation_jobs").update({ status: "running", raw_output: { stage: "starting", started_at: startedAt, regeneration: replaceExisting } }).eq("id", jobId);
     if (startError) throw startError;
     if (!replaceExisting) {
       const { data: existing, error: duplicateError } = await db.from("topics")
@@ -27,13 +28,13 @@ export async function runGenerationJob({ token, topicId, jobId, title, config, r
     if (categoryError) throw categoryError;
     const categories = (categoryRows || []) as CategoryOption[];
     outline = await generateOutline(title, categoryPaths(categories).map(category => category.path), config);
-    const { error: outlineError } = await db.from("topic_generation_jobs").update({ raw_output: { stage: "generating_sections", outline, regeneration: replaceExisting } }).eq("id", jobId);
+    const { error: outlineError } = await db.from("topic_generation_jobs").update({ raw_output: { stage: "generating_sections", started_at: startedAt, outline, regeneration: replaceExisting } }).eq("id", jobId);
     if (outlineError) throw outlineError;
 
     const sectionRows = [];
     for (const section of outline.sections) {
       sectionRows.push({ section, points: await generateSection(title, section, config) });
-      const { error: progressError } = await db.from("topic_generation_jobs").update({ raw_output: { stage: "generating_sections", outline, completed_sections: sectionRows.length, total_sections: outline.sections.length, regeneration: replaceExisting } }).eq("id", jobId);
+      const { error: progressError } = await db.from("topic_generation_jobs").update({ raw_output: { stage: "generating_sections", started_at: startedAt, outline, completed_sections: sectionRows.length, total_sections: outline.sections.length, regeneration: replaceExisting } }).eq("id", jobId);
       if (progressError) throw progressError;
     }
 

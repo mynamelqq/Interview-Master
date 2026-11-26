@@ -5,6 +5,7 @@ AI 技术面试知识库的首条垂直链路：注册登录与邮箱确认 → 
 ## 本地启动
 
 1. 在 Supabase 创建项目，打开 SQL Editor，按文件名顺序执行 `supabase/migrations/` 中的 SQL 文件。已有项目只执行尚未运行的迁移。`202611260002_ai_model_groups.sql` 新增 AI 模型分组和任务分组关联。`202611250006_recommendation_preferences.sql` 保存每位用户的推荐分类、随机比例，以及知识点收藏和暂不推荐操作。`202611250005_chapter_notes.sql` 会把原来按知识点保存的笔记合并到对应章节，并保留知识点标题。`202611250002_admin_readers.sql` 会把执行时已有的账号设为管理员；之后注册的账号默认为普通用户，执行前请确认现有账号均应获得管理员权限。
+   `202611260003_generation_queue.sql` 为生成任务增加最多 7 个同时运行的领取机制。确认当前项目已执行 `202611240001_init.sql`、存在 `public.topic_generation_jobs` 后，再执行 `202611260004_generation_queue_scope.sql`；已执行过 003 的项目不要重跑 003。其余任务会排队，管理员保持应用页面打开时，页面每 5 秒检查并启动下一批；关闭所有管理员页面后，待处理任务会在下次打开应用时继续。
 2. 复制 `.env.example` 为 `.env.local`，填写 Supabase Project URL、publishable/anon key，以及支持 OpenAI Chat Completions JSON mode 的 AI 服务地址、模型名和密钥。`AI_API_KEY` 只在服务端使用。新增模型分组时还需配置固定的 `AI_CONFIG_ENCRYPTION_KEY`（32 字节的十六进制值，可用 `openssl rand -hex 32` 生成）；不要在已有分组创建后更换，否则原密钥无法解密。
 3. 运行 `npm install` 和 `npm run dev`，打开 `http://localhost:3000`。在 Supabase Auth 设置中配置邮件确认与站点 URL。
 

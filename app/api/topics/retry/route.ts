@@ -1,5 +1,5 @@
 import { after } from "next/server";
-import { runGenerationJob } from "@/lib/generation-job";
+import { dispatchGenerationJobs } from "@/lib/generation-queue";
 import { getRequestClient } from "@/lib/supabase";
 import { resolveModelConfig } from "@/lib/ai-model-groups";
 
@@ -24,6 +24,8 @@ export async function POST(request: Request) {
   let config;
   try { config = await resolveModelConfig(db, auth.user.id, body.groupId); }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "模型分组不可用" }, { status: 400 }); }
+  const { error: queueError } = await db.rpc("claim_generation_jobs", { p_limit: 0 });
+  if (queueError) return Response.json({ error: `生成队列不可用（${queueError.code}）：${queueError.message}` }, { status: 503 });
   if (job.status !== "failed") return Response.json({ error: "只有失败的任务可以重试" }, { status: 409 });
   const replaceExisting = job.raw_output?.regeneration === true;
   const duplicateOnly = !job.topic_id && job.raw_output?.stage === "duplicate_title";
@@ -75,6 +77,6 @@ export async function POST(request: Request) {
     }
   }
 
-  after(() => runGenerationJob({ token, topicId, jobId: job.id, title: job.input_title, config, replaceExisting }));
+  after(() => dispatchGenerationJobs(token));
   return Response.json({ topicId, jobId: job.id, status: "pending" }, { status: 202 });
 }
