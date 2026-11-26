@@ -99,6 +99,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .create-wrap .create-file-label{margin-bottom:9px}
 .create-wrap input[type="file"]{min-height:0;width:100%;padding:10px;font-size:12px}
 .create-input-error{color:#a14f3e;font-size:12px;line-height:1.5;margin:10px 0 0;overflow-wrap:anywhere}
+.create-submit-success{display:grid;gap:5px;margin-top:14px;padding:14px 16px;border:1px solid #b8dec7;border-radius:9px;background:#eef8f1;color:#245c3c;font-size:13px;line-height:1.55}
+.create-submit-success strong{font-size:14px}
+.create-submit-success button{justify-self:start;margin-top:2px;padding:5px 0;border:0;background:none;color:#1f7048;font-size:12px;font-weight:700;cursor:pointer}
+.create-submit-success button:hover{text-decoration:underline}
 /* Keep the reading canvas quiet and let the chapter outline move with the page. */
 .reader-right{position:sticky;top:0;height:100dvh;max-height:100dvh;overflow-x:hidden;overflow-y:auto;align-self:start}.reader-right h3{font-size:14px;color:#334155;margin-bottom:22px}.toc-section{margin-bottom:16px}.toc-section-head a{font-size:13px;font-weight:700;color:#394a60;line-height:1.5}.reader-right a.toc-point{padding:9px 5px 9px 15px;margin-left:4px;border-left:2px solid #e0e6ee;font-size:12px;line-height:1.55;color:#69788b}.reader-right a.toc-point.active{border-left-color:#3978e8;background:transparent;color:#286bd4}.reader-right a:not(.active){color:#69788b}.reader-toolbar-actions .reader-top-toggle{display:none}
 .chapter-kicker{display:block;color:#718198;font-size:12px;font-weight:700;letter-spacing:.03em}.article .chapter-kicker{margin-bottom:9px}.point-title{display:block}.point-title h3{font-size:22px;line-height:1.45}.point-block{border-top:0;border-bottom:1px solid #e5e9ef}.article>section{border-bottom:1px solid #dce3ec}.article>section:last-child{border-bottom:0}

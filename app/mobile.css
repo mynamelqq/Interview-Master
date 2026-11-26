@@ -49,6 +49,38 @@
   .mobile-continue-entry{margin-top:0}
   .mobile-empty{font-size:13px;line-height:1.7;color:#82928a;padding:16px;border:1px dashed #cddbd1;border-radius:12px}
   .mobile-offline-banner{padding:12px 14px;background:#fff4df;color:#76572b;border-radius:10px;font-size:12px;margin:0 0 22px}
+  .mobile-home-intro{padding-bottom:24px}
+  .mobile-home-intro h1{font-size:clamp(30px,8.5vw,38px)}
+  .mobile-home-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 32px;padding:17px 0;border-top:1px solid #dce6df;border-bottom:1px solid #dce6df}
+  .mobile-home-overview div{display:flex;flex-direction:column-reverse;gap:3px;min-width:0}
+  .mobile-home-overview dt{font-size:11px;color:#71817d}
+  .mobile-home-overview dd{margin:0;color:#18312d;font-size:23px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+  .mobile-home-section{margin-top:34px}
+  .mobile-home-overview+.mobile-home-section{margin-top:0}
+  .mobile-home-shortcuts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:24px 0 34px}
+  .mobile-home-shortcuts button{display:grid;justify-items:start;align-content:start;gap:4px;min-height:118px;padding:15px;border:1px solid #dce6df;border-radius:13px;background:#fff;color:#18312d;text-align:left}
+  .mobile-home-shortcuts button>span{color:#1d6c56;font-size:21px;line-height:1.2;margin-bottom:5px}
+  .mobile-home-shortcuts strong{font-size:14px}
+  .mobile-home-shortcuts small{color:#71817d;font-size:11px;line-height:1.4}
+  .mobile-home-shortcuts button:disabled{opacity:.5}
+  .mobile-home-shortcuts+.mobile-home-section{margin-top:0}
+  .mobile-card-entry{margin-top:14px}
+  .mobile-section-link{min-height:44px;border:0;background:none;color:#1d6c56;font-size:12px;font-weight:700;padding:6px 0}
+  .mobile-section-link:disabled{color:#9caaa0}
+  .mobile-recommendation-list,.mobile-recent-list{overflow:hidden;border:1px solid #dce6df;border-radius:13px;background:#fff}
+  .mobile-recommendation-list button,.mobile-recent-list button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:68px;padding:14px 16px;border:0;border-bottom:1px solid #e9eeea;background:#fff;color:#18312d;text-align:left}
+  .mobile-recommendation-list button:last-child,.mobile-recent-list button:last-child{border-bottom:0}
+  .mobile-recommendation-list button>span:first-child,.mobile-recent-list button>span:first-child{display:grid;gap:5px;min-width:0}
+  .mobile-recommendation-list strong,.mobile-recent-list strong{font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+  .mobile-recommendation-list small,.mobile-recent-list small{font-size:11px;color:#71817d;line-height:1.4;overflow-wrap:anywhere}
+  .mobile-recommendation-list button>span:last-child,.mobile-recent-list button>span:last-child{color:#1d6c56;font-size:18px;flex:none}
+  .mobile-admin-section{padding-top:24px;border-top:1px solid #dce6df}
+  .mobile-admin-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .mobile-admin-links button{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:55px;padding:12px 14px;border:1px solid #dce6df;border-radius:11px;background:#fff;color:#18312d;font-size:13px;text-align:left}
+  .mobile-admin-links strong{color:#1d6c56;font-size:20px;font-variant-numeric:tabular-nums}
+  .mobile-admin-create{display:block;width:100%;min-height:44px;margin-top:10px;border:1px solid #aacbbb;border-radius:11px;background:#e6f1e9;color:#1d6c56;font-size:13px;font-weight:700}
+  .mobile-feature-footer button{min-height:44px}
+  .mobile-home button:focus-visible{outline:2px solid #1d6c56;outline-offset:3px}
   .mobile-nav{height:calc(66px + env(safe-area-inset-bottom));align-items:flex-start;gap:0;padding:6px 6px env(safe-area-inset-bottom);background:#fff;border-top:1px solid #e2e9e3;box-shadow:0 -6px 22px rgba(24,49,45,.04)}
   .mobile-nav button{flex:1;display:grid;justify-items:center;gap:2px;min-height:52px;padding:4px 0;color:#82928a;font-size:11px;font-weight:600}
   .mobile-nav button span{font-size:22px;line-height:1.1}
