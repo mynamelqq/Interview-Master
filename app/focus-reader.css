@@ -21,3 +21,4 @@
 .focus-back-to-top{display:none}
 @media(max-width:760px){.focus-back-to-top{display:block;position:fixed;z-index:26;right:16px;bottom:max(70px,calc(54px + env(safe-area-inset-bottom)));min-height:44px;padding:10px 14px;border:1px solid #cbdcf5;border-radius:7px;background:var(--focus-paper);color:#286bd4;font-size:12px;font-weight:700;box-shadow:0 6px 18px rgba(32,41,56,.18)}}
 .focus-bg-dark .focus-back-to-top{border-color:#42536a;color:#91bcff}
+.focus-bg-dark .point-recall-prompt span{background:#2c3a50;color:#b9cbe1}.focus-bg-dark .point-recall-prompt p{color:#f1f5fb}

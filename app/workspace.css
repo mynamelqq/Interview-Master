@@ -83,3 +83,4 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .create-wrap .create-file-label{margin-bottom:9px}
 .create-wrap input[type="file"]{min-height:0;width:100%;padding:10px;font-size:12px}
 .create-input-error{color:#a14f3e;font-size:12px;line-height:1.5;margin:10px 0 0;overflow-wrap:anywhere}
+.point-recall-prompt{margin:24px 0 28px}.point-recall-prompt span{display:inline-block;padding:4px 10px;border-radius:4px;background:#eef2f7;color:#526176;font-size:12px;font-weight:700}.point-recall-prompt p{margin:12px 0 0;color:#1e3658;font-size:1.05em;font-weight:600;line-height:1.65}

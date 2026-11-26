@@ -5,6 +5,7 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getBrowserClient } from "@/lib/supabase";
 import type { Category, GenerationJob, KnowledgePoint, Topic } from "@/lib/types";
 import { MarkdownContent } from "@/components/markdown-content";
+import { PointContent } from "@/components/point-content";
 import { normalizeMarkdown } from "@/lib/markdown";
 import { FocusReader, defaultReaderPreferences, type ReaderPreferences } from "@/components/focus-reader";
 import { TopicAnswerFocus } from "@/components/topic-answer-focus";
@@ -809,6 +810,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       }
     } finally {
       try { await loadJobs(); }
+      catch { setError("重试已提交，但任务列表刷新失败，请稍后重新打开任务中心。"); }
       finally {
         retryAllRunningRef.current = false;
         setRetryAllProgress({
@@ -1210,7 +1212,7 @@ function PointBlock({ point, activity, mastery, canEdit, onSave, onVerify, onCon
     <div className="point-title"><h3>{point.title}</h3></div>
     {editing ? <div className="edit-area"><textarea aria-label={`编辑${point.title}`} value={content} onChange={event => setContent(event.target.value)} rows={12} /><div><button className="primary-btn" disabled={saving} onClick={async () => { setSaving(true); const saved = await onSave(point, content); setSaving(false); if (saved) setEditing(false); }}>{saving ? "保存中…" : "保存修改"}</button><button className="text-btn" disabled={saving} onClick={() => { setContent(point.content_md || ""); setEditing(false); }}>取消</button></div></div> : <>
       
-      <div className="content-section"><h4>核心原理</h4><MarkdownContent content={point.content_md || (canEdit ? "暂无内容，点击编辑补充知识讲解。" : "暂无内容。")} prose /></div>
+      <div className="content-section"><h4>核心原理</h4><PointContent content={point.content_md || (canEdit ? "暂无内容，点击编辑补充知识讲解。" : "暂无内容。")} /></div>
       {point.example_md && <div className="content-section example-section"><h4>代码示例</h4><MarkdownContent content={point.example_md} /></div>}
       {point.common_mistakes?.length > 0 && <div className="mistakes"><strong>易错点</strong><ul>{point.common_mistakes.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {point.key_takeaways?.length > 0 && <div className="takeaways"><strong>补充要点</strong><ul>{point.key_takeaways.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
