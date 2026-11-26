@@ -7,6 +7,7 @@ import "./focus-reader.css";
 import "./flashcard.css";
 import "./management-pages.css";
 import "./mobile.css";
+import "./model-groups.css";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 

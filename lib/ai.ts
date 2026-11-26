@@ -1,4 +1,5 @@
 import { normalizeMarkdown } from "./markdown.ts";
+import type { AiModelConfig } from "./ai-model-groups.ts";
 
 export type Outline = { summary: string; answer_focus: string; category?: string; sections: { title: string; points: string[] }[] };
 type PointContent = { title: string; recall_prompt: string; content_md: string; example_md: string; key_takeaways: string[]; common_mistakes: string[]; interview_questions: string[] };
@@ -48,10 +49,10 @@ function named(value: unknown): string | null {
   return entry ? nonemptyString(first(entry, ["title", "name", "section_title", "sectionTitle", "chapter_title", "point_title", "标题", "名称"])) : null;
 }
 
-async function completion(system: string, user: string, stage: string): Promise<{ data: unknown; raw: string }> {
-  const key = process.env.AI_API_KEY;
-  const model = process.env.AI_MODEL;
-  const base = process.env.AI_BASE_URL || "https://api.openai.com/v1";
+async function completion(system: string, user: string, stage: string, config?: AiModelConfig): Promise<{ data: unknown; raw: string }> {
+  const key = config?.apiKey || process.env.AI_API_KEY;
+  const model = config?.model || process.env.AI_MODEL;
+  const base = config?.baseUrl || process.env.AI_BASE_URL || "https://api.openai.com/v1";
   if (!key || !model) throw new Error("AI_API_KEY 或 AI_MODEL 尚未配置");
   const response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
@@ -129,7 +130,7 @@ export function normalizeOutline(data: unknown): Outline {
   return { summary, answer_focus: answerFocus, ...(category ? { category } : {}), sections };
 }
 
-export async function generateOutline(title: string, categories: string[] = []): Promise<Outline> {
+export async function generateOutline(title: string, categories: string[] = [], config?: AiModelConfig): Promise<Outline> {
   const categoryInstruction = categories.length
     ? `请从以下已有分类中选择最合适的一项，category 必须逐字返回完整分类路径：${categories.map(category => `「${category}」`).join("、")}。没有合适分类时返回空字符串。`
     : "当前没有可用分类，category 返回空字符串。";
@@ -137,6 +138,7 @@ export async function generateOutline(title: string, categories: string[] = []):
     INTERVIEW_SYSTEM,
     `为「${title}」设计一份够用的技术面试专题，不要写成百科或系统课程。请严格返回此结构：{"category":"已有分类完整路径或空字符串","summary":"一两句通俗的专题摘要","answer_focus":"针对整个专题面试问题的直接回答","sections":[{"title":"章节标题","points":["知识点标题"]}]}。answer_focus 必须非空，只针对专题「${title}」生成一份，不针对章节或知识点分别生成。把它写成求职者能直接说出口的回答：先给结论，再用两三句解释面试官最可能追问的原理、适用场景或取舍；不用开场白、回答建议、提纲和章节罗列。${categoryInstruction}sections 和 points 必须是非空数组；points 的元素必须是字符串。通常安排 2–4 章、每章 1–3 个知识点，优先选择高频问题；不为凑数量加入冷门源码细节、冗长配置或与面试无关的扩展。章节和知识点标题尽量使用中文，保留必要的标准技术名称。`,
     "outline_validation_failed",
+    config,
   );
   try { return normalizeOutline(data); }
   catch (error) {
@@ -145,11 +147,12 @@ export async function generateOutline(title: string, categories: string[] = []):
   }
 }
 
-export async function generateSection(topic: string, section: { title: string; points: string[] }): Promise<PointContent[]> {
+export async function generateSection(topic: string, section: { title: string; points: string[] }, config?: AiModelConfig): Promise<PointContent[]> {
   const { data, raw } = await completion(
     INTERVIEW_SYSTEM,
     `专题：${topic}。章节：${section.title}。请逐一讲解这些知识点：${section.points.join("、")}。严格返回 {"points":[{"title":"知识点标题","recall_prompt":"一句能引出面试常问问题的回忆提示","content_md":"通俗、简短的中文参考答案，可使用少量 Markdown 小标题和短段落","example_md":"确有助于理解时才给简短代码或配置，否则为空字符串","key_takeaways":["必要的补充结论，否则为空数组"],"common_mistakes":["常见误解，否则为空数组"],"interview_questions":["常见面试追问，否则为空数组"]}]}。每个知识点必须有 title、非空 recall_prompt 和非空 content_md。正文先直接回答是什么，再解释为什么、怎么做或什么时候用，只写面试中能讲清楚的关键内容；优先使用短句和具体例子，避免长篇背景、低频源码细节和重复定义。能用中文说清楚的概念不要反复附英文；必须保留的英文术语首次出现时用中文解释，不要把多个英文关键词堆在同一句。版本差异或不确定之处仅在影响回答准确性时简要说明。其余模块按需选用，不要机械填满，也不要重复正文。整体面试回答重点已经在专题级生成，这里不要再生成 answer_focus。JSON 字符串中的换行只转义一次；真实代码请使用正确的语言标识。`,
     "section_validation_failed",
+    config,
   );
   const root = object(data);
   const rawPoints = root && first(root, ["points", "knowledge_points", "items", "知识点"]);

@@ -23,6 +23,8 @@ import { defaultRecommendationPreferences, preferredPoints, type RecommendationP
 import { RecommendationSettings } from "@/components/recommendation-settings";
 import { categoryCoverage } from "@/lib/category-coverage";
 import { FavoritesPanel } from "@/components/favorites-panel";
+import { ModelGroupPicker, type ModelGroupDraft } from "@/components/model-group-picker";
+import type { AiModelGroup } from "@/lib/ai-model-groups";
 import { MobileHome } from "@/components/mobile-home";
 import { getOfflineTopic, listOfflineTopics, removeOfflineTopic, saveOfflineTopic, type OfflineTopic } from "@/lib/offline-topics";
 
@@ -78,6 +80,9 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [topicsLoad, setTopicsLoad] = useState<"loading" | "loaded" | "error">("loading");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
+  const [modelGroups, setModelGroups] = useState<AiModelGroup[]>([]);
+  const [modelGroupsStatus, setModelGroupsStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [selectedModelGroupId, setSelectedModelGroupId] = useState("");
   const [jobsLoaded, setJobsLoaded] = useState(false);
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [topicInsights, setTopicInsights] = useState<Record<string, TopicInsight>>({});
@@ -249,6 +254,9 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
         setView(initialTopicId ? "reader" : "home");
         setTopicsLoad("loading");
         setJobs([]);
+        setModelGroups([]);
+        setModelGroupsStatus("loading");
+        setSelectedModelGroupId("");
         setJobsLoaded(false);
         setTaskDrawerOpen(false);
         setTopicInsights({});
@@ -374,6 +382,42 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     const timer = window.setInterval(() => { void loadJobs(); }, 5000);
     return () => window.clearInterval(timer);
   }, [user, isAdmin, loadJobs]);
+  useEffect(() => {
+    if (!db || !currentUserId || isAdmin !== true) return;
+    let cancelled = false;
+    void db.auth.getSession().then(async ({ data }) => {
+      const token = data.session?.access_token;
+      if (!token) throw new Error("登录已过期");
+      const response = await fetch("/api/ai-model-groups", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      const result: { groups?: AiModelGroup[]; error?: string } = await response.json();
+      if (!response.ok) throw new Error(result.error || "加载模型分组失败");
+      if (cancelled) return;
+      const groups = result.groups || [];
+      const saved = window.localStorage.getItem(`im:model-group:${currentUserId}`);
+      setModelGroups(groups);
+      setSelectedModelGroupId(groups.find(group => group.id === saved)?.id || groups[0]?.id || "");
+      setModelGroupsStatus("loaded");
+    }).catch(error => { if (!cancelled) { setModelGroupsStatus("error"); setError(error instanceof Error ? error.message : "加载模型分组失败"); } });
+    return () => { cancelled = true; };
+  }, [currentUserId, isAdmin]);
+  function selectModelGroup(id: string) {
+    setSelectedModelGroupId(id);
+    if (currentUserId) window.localStorage.setItem(`im:model-group:${currentUserId}`, id);
+  }
+  async function saveModelGroup(draft: ModelGroupDraft): Promise<{ group?: AiModelGroup; error?: string }> {
+    if (!db) return { error: "请先登录" };
+    try {
+      const { data } = await db.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return { error: "登录已过期，请重新登录" };
+      const response = await fetch("/api/ai-model-groups", { method: draft.id ? "PATCH" : "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(draft) });
+      const result: { group?: AiModelGroup; error?: string } = await response.json();
+      if (!response.ok || !result.group) return { error: result.error || "保存模型分组失败" };
+      const group = result.group;
+      setModelGroups(current => draft.id ? current.map(item => item.id === group.id ? group : item) : [...current, group]);
+      return { group };
+    } catch { return { error: "网络请求失败，请重试" }; }
+  }
   useEffect(() => {
     if (!db || !selectedId || !user) return;
     let cancelled = false;
@@ -648,7 +692,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (!db || isAdmin !== true) return null;
     setBusy(true); setError("");
     try {
-      const response = await postGenerationRequest(db, "/api/topics/generate", { titles });
+      const response = await postGenerationRequest(db, "/api/topics/generate", { titles, groupId: selectedModelGroupId });
       const result: { error?: string; created?: { title: string }[]; failed?: { title: string; error: string }[] } = await response.json();
       const created = result.created || [];
       const failed = result.failed || [];
@@ -669,7 +713,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (!window.confirm(`重新生成「${topic.title}」？生成成功后会替换专题内容，并重置知识点的学习记录和笔记；生成失败时原内容会保留。`)) return;
     setRegeneratingTopicId(topic.id); setError("");
     try {
-      const response = await postGenerationRequest(db, "/api/topics/regenerate", { topicId: topic.id });
+      const response = await postGenerationRequest(db, "/api/topics/regenerate", { topicId: topic.id, groupId: selectedModelGroupId });
       const result = await response.json();
       if (!response.ok) { setError(result.error || "重新生成失败"); return; }
       await loadJobs();
@@ -795,7 +839,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       {view === "browse" && (insightsStatus === "loaded" && recommendationPreferencesReady ? <CasualCards userId={user.id} points={preferredRecommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} offline={offline} onSeen={onCardSeen} onControl={setPointControl} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
       {view === "profile" && <section className="mobile-profile"><span className="mobile-home-kicker">我的</span><h1>我的阅读</h1><p>{user.email || "离线阅读"}</p><div className="mobile-section-title"><h2>离线专题</h2><span>{offlineTopics.length} 篇</span></div>{offlineTopics.length ? <div className="mobile-saved-list">{offlineTopics.map(item => <button key={item.key} onClick={() => openTopic(item.topic.id)}><strong>{item.topic.title}</strong><small>已保存 · 离线可读</small></button>)}</div> : <p className="mobile-empty">打开专题后，点“存离线”即可在没网时阅读。</p>}<p className="mobile-install-hint">想从 iPhone 主屏幕打开？在 Safari 点“分享”，再选“添加到主屏幕”。</p><button className="mobile-signout" onClick={() => { window.localStorage.removeItem("im:offline-identity"); authUserIdRef.current = null; setUser(null); setOfflineTopics([]); setTopics([]); void db?.auth.signOut({ scope: "local" }); }}>退出登录</button></section>}
       {view === "drafts" && isAdmin && <DraftPanel topics={draftTopics} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} onOpen={openTopic} onCreate={() => navigate("create")} onDelete={topic => void deleteDraft(topic)} />}
-      {view === "create" && isAdmin && <CreatePanel busy={busy} onGenerate={generate} onManual={createManual} />}
+      {view === "create" && isAdmin && <CreatePanel busy={busy} groups={modelGroups} groupsStatus={modelGroupsStatus} selectedGroupId={selectedModelGroupId} onSelectGroup={selectModelGroup} onSaveGroup={saveModelGroup} onGenerate={generate} onManual={createManual} />}
       {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} savedOffline={offlineTopics.some(item => item.topic.id === selected.id)} onToggleOffline={() => void toggleOfflineTopic()} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
       {view === "reader" && focus && selected && pointsLoad.status !== "loaded" && (pointsLoad.status === "error" ? <div className="reader-load-error">专题内容加载失败。<button className="text-btn" onClick={() => setFocus(false)}>返回专题页</button></div> : <ReaderLoading full />)}
       {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑ 回到顶部</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
@@ -978,13 +1022,13 @@ function TopicTile({ topic, category, onOpen }: { topic: Topic; category: string
   return <button className="topic-tile" onClick={onOpen}><span className="topic-category">{category}</span><strong>{topic.title}</strong><span className="topic-meta">{new Date(topic.created_at).toLocaleDateString("zh-CN")}</span><span className="tile-arrow">↗</span></button>;
 }
 
-function CreatePanel({ busy, onGenerate, onManual }: { busy: boolean; onGenerate: (titles: string[]) => Promise<string[] | null>; onManual: (title: string) => void }) {
+function CreatePanel({ busy, groups, groupsStatus, selectedGroupId, onSelectGroup, onSaveGroup, onGenerate, onManual }: { busy: boolean; groups: AiModelGroup[]; groupsStatus: "loading" | "loaded" | "error"; selectedGroupId: string; onSelectGroup: (id: string) => void; onSaveGroup: (draft: ModelGroupDraft) => Promise<{ group?: AiModelGroup; error?: string }>; onGenerate: (titles: string[]) => Promise<string[] | null>; onManual: (title: string) => void }) {
   const [input, setInput] = useState("");
   const [fileError, setFileError] = useState("");
   const [readingFile, setReadingFile] = useState(false);
   const titles = [...new Set(input.split(/[;；]/).map(title => title.trim()).filter(Boolean))];
   const invalidTitle = titles.find(title => title.length > 120);
-  const canSubmit = titles.length > 0 && titles.length <= 100 && !invalidTitle && !readingFile && !busy;
+  const canSubmit = titles.length > 0 && titles.length <= 100 && !invalidTitle && !readingFile && !busy && groupsStatus === "loaded" && !!selectedGroupId;
 
   async function importFile(file?: File) {
     if (!file) return;
@@ -1000,7 +1044,7 @@ function CreatePanel({ busy, onGenerate, onManual }: { busy: boolean; onGenerate
     finally { setReadingFile(false); }
   }
 
-  return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入一个或多个专题名称，AI 会自动选择分类并生成内容。多个名称用 ; 分隔，也可以导入 .txt 文件。完成后可在草稿箱检查。</p><form onSubmit={async event => { event.preventDefault(); if (!canSubmit) return; const failed = await onGenerate(titles); if (failed?.length) setInput(failed.join(";")); }}><label htmlFor="topic-title">专题名称</label><textarea id="topic-title" rows={5} placeholder="例如：Redis 持久化机制;MySQL 索引原理" value={input} onChange={event => { setInput(event.target.value); setFileError(""); }} aria-describedby="topic-input-help" /><p id="topic-input-help" className="create-input-help">用英文 ; 或中文 ； 分隔，每个名称最多 120 字，单次最多 100 个任务。</p><label className="create-file-label" htmlFor="topic-file">导入文本文件（.txt）</label><input id="topic-file" type="file" accept=".txt,text/plain" disabled={busy || readingFile} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />{fileError && <p className="create-input-error" role="alert">{fileError}</p>}{invalidTitle && <p className="create-input-error" role="alert">专题名称不能超过 120 字：{invalidTitle}</p>}{titles.length > 100 && <p className="create-input-error" role="alert">单次最多提交 100 个专题。</p>}<div className="generation-list"><span>生成内容 · {titles.length} 个专题</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={!canSubmit}>{busy ? "正在提交任务…" : titles.length > 1 ? `AI 生成 ${titles.length} 个专题` : "AI 生成专题"}</button><button type="button" className="text-btn" disabled={busy || readingFile || titles.length !== 1 || !!invalidTitle} onClick={() => onManual(titles[0])}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
+  return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入一个或多个专题名称，AI 会自动选择分类并生成内容。多个名称用 ; 分隔，也可以导入 .txt 文件。完成后可在草稿箱检查。</p><ModelGroupPicker groups={groups} selectedId={selectedGroupId} status={groupsStatus} onSelect={onSelectGroup} onSave={onSaveGroup} /><form onSubmit={async event => { event.preventDefault(); if (!canSubmit) return; const failed = await onGenerate(titles); if (failed?.length) setInput(failed.join(";")); }}><label htmlFor="topic-title">专题名称</label><textarea id="topic-title" rows={5} placeholder="例如：Redis 持久化机制;MySQL 索引原理" value={input} onChange={event => { setInput(event.target.value); setFileError(""); }} aria-describedby="topic-input-help" /><p id="topic-input-help" className="create-input-help">用英文 ; 或中文 ； 分隔，每个名称最多 120 字，单次最多 100 个任务。</p><label className="create-file-label" htmlFor="topic-file">导入文本文件（.txt）</label><input id="topic-file" type="file" accept=".txt,text/plain" disabled={busy || readingFile} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />{fileError && <p className="create-input-error" role="alert">{fileError}</p>}{invalidTitle && <p className="create-input-error" role="alert">专题名称不能超过 120 字：{invalidTitle}</p>}{titles.length > 100 && <p className="create-input-error" role="alert">单次最多提交 100 个专题。</p>}<div className="generation-list"><span>生成内容 · {titles.length} 个专题</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={!canSubmit}>{busy ? "正在提交任务…" : titles.length > 1 ? `AI 生成 ${titles.length} 个专题` : "AI 生成专题"}</button><button type="button" className="text-btn" disabled={busy || readingFile || titles.length !== 1 || !!invalidTitle} onClick={() => onManual(titles[0])}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
 }
 
 function PointBlock({ point, activity, mastery, canEdit, onSave, onVerify, onControl }: { point: KnowledgePoint; activity?: PointActivity; mastery: number; canEdit: boolean; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void; onControl: (id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") => Promise<boolean> }) {

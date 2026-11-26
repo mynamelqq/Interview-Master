@@ -3,10 +3,11 @@ import { getRequestClient } from "@/lib/supabase";
 import { categoryPaths, matchCategoryId, type CategoryOption } from "@/lib/category-match";
 import { formatTopicAnswer } from "@/lib/topic-answer";
 import { formatCardContent } from "@/lib/card-content";
+import type { AiModelConfig } from "@/lib/ai-model-groups";
 
-type JobInput = { token: string; topicId: string; jobId: string; title: string; replaceExisting?: boolean };
+type JobInput = { token: string; topicId: string; jobId: string; title: string; config: AiModelConfig; replaceExisting?: boolean };
 
-export async function runGenerationJob({ token, topicId, jobId, title, replaceExisting = false }: JobInput) {
+export async function runGenerationJob({ token, topicId, jobId, title, config, replaceExisting = false }: JobInput) {
   const db = getRequestClient(token);
   let outline: Outline | null = null;
   try {
@@ -15,13 +16,13 @@ export async function runGenerationJob({ token, topicId, jobId, title, replaceEx
     const { data: categoryRows, error: categoryError } = await db.from("categories").select("id,name,parent_id").order("sort_order").order("name");
     if (categoryError) throw categoryError;
     const categories = (categoryRows || []) as CategoryOption[];
-    outline = await generateOutline(title, categoryPaths(categories).map(category => category.path));
+    outline = await generateOutline(title, categoryPaths(categories).map(category => category.path), config);
     const { error: outlineError } = await db.from("topic_generation_jobs").update({ raw_output: { stage: "generating_sections", outline, regeneration: replaceExisting } }).eq("id", jobId);
     if (outlineError) throw outlineError;
 
     const sectionRows = [];
     for (const section of outline.sections) {
-      sectionRows.push({ section, points: await generateSection(title, section) });
+      sectionRows.push({ section, points: await generateSection(title, section, config) });
       const { error: progressError } = await db.from("topic_generation_jobs").update({ raw_output: { stage: "generating_sections", outline, completed_sections: sectionRows.length, total_sections: outline.sections.length, regeneration: replaceExisting } }).eq("id", jobId);
       if (progressError) throw progressError;
     }

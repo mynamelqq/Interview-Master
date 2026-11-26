@@ -4,13 +4,13 @@ AI 技术面试知识库的首条垂直链路：注册登录与邮箱确认 → 
 
 ## 本地启动
 
-1. 在 Supabase 创建项目，打开 SQL Editor，按文件名顺序执行 `supabase/migrations/` 中的 SQL 文件。已有项目只执行尚未运行的迁移。`202611250006_recommendation_preferences.sql` 保存每位用户的推荐分类、随机比例，以及知识点收藏和暂不推荐操作。`202611250005_chapter_notes.sql` 会把原来按知识点保存的笔记合并到对应章节，并保留知识点标题。`202611250002_admin_readers.sql` 会把执行时已有的账号设为管理员；之后注册的账号默认为普通用户，执行前请确认现有账号均应获得管理员权限。
-2. 复制 `.env.example` 为 `.env.local`，填写 Supabase Project URL、publishable/anon key，以及支持 OpenAI Chat Completions JSON mode 的 AI 服务地址、模型名和密钥。`AI_API_KEY` 只在服务端使用。
+1. 在 Supabase 创建项目，打开 SQL Editor，按文件名顺序执行 `supabase/migrations/` 中的 SQL 文件。已有项目只执行尚未运行的迁移。`202611260002_ai_model_groups.sql` 新增 AI 模型分组和任务分组关联。`202611250006_recommendation_preferences.sql` 保存每位用户的推荐分类、随机比例，以及知识点收藏和暂不推荐操作。`202611250005_chapter_notes.sql` 会把原来按知识点保存的笔记合并到对应章节，并保留知识点标题。`202611250002_admin_readers.sql` 会把执行时已有的账号设为管理员；之后注册的账号默认为普通用户，执行前请确认现有账号均应获得管理员权限。
+2. 复制 `.env.example` 为 `.env.local`，填写 Supabase Project URL、publishable/anon key，以及支持 OpenAI Chat Completions JSON mode 的 AI 服务地址、模型名和密钥。`AI_API_KEY` 只在服务端使用。新增模型分组时还需配置固定的 `AI_CONFIG_ENCRYPTION_KEY`（32 字节的十六进制值，可用 `openssl rand -hex 32` 生成）；不要在已有分组创建后更换，否则原密钥无法解密。
 3. 运行 `npm install` 和 `npm run dev`，打开 `http://localhost:3000`。在 Supabase Auth 设置中配置邮件确认与站点 URL。
 
 ## 部署到 Vercel
 
-在 Vercel 导入仓库并设置与 `.env.local` 相同的五个环境变量。先执行数据库迁移，再部署。生成接口创建任务后立即返回，Next.js `after()` 在响应后继续按目录和章节调用模型。生成路由配置为 800 秒，超过 15 分钟未完成的任务会在用户刷新任务状态时标记失败。Vercel Pro/Enterprise 的 Fluid Compute 支持 800 秒函数时长；Hobby 最多 300 秒，使用 Hobby 时必须把三个生成路由的 `maxDuration` 改回 300，或者改用独立的后台任务服务。将 `http://localhost:3000` 和正式域名加入 Supabase Auth URL 配置，确保确认邮件能返回正确地址。
+在 Vercel 导入仓库并设置与 `.env.local` 相同的环境变量。先执行数据库迁移，再部署。生成接口创建任务后立即返回，Next.js `after()` 在响应后继续按目录和章节调用模型。生成路由配置为 800 秒，超过 7 分钟未完成的任务会在用户刷新任务状态时标记失败。Vercel Pro/Enterprise 的 Fluid Compute 支持 800 秒函数时长；Hobby 最多 300 秒，使用 Hobby 时必须把三个生成路由的 `maxDuration` 改回 300，或者改用独立的后台任务服务。将 `http://localhost:3000` 和正式域名加入 Supabase Auth URL 配置，确保确认邮件能返回正确地址。
 
 ## 手机阅读与离线使用
 
@@ -22,6 +22,7 @@ AI 技术面试知识库的首条垂直链路：注册登录与邮箱确认 → 
 
 - 已实现：邮箱注册登录与邮件确认、已发布知识库列表、只收纳生成完成内容的草稿箱、手动创建、AI 后台分段生成、顶部任务入口与任务抽屉、失败任务重试、草稿阅读、Markdown 编辑、知识点卡片预览、检查后发布、响应式布局。失败和生成中的任务在任务中心处理；重试会清理失败任务留下的知识点并重新生成。
 - AI 目录接受常见的 `sections` / `chapters` 与 `points` / `knowledge_points` 字段，不再按固定章节数量拒绝结果。校验失败时，任务的 `error_message` 指出具体字段，`raw_output.model_output` 保存模型原始返回，供排查。任务抽屉显示进度、失败重试和可展开的技术错误详情。
+- AI 创建专题可选择模型分组，并在抽屉中新增或修改分组名称、模型 URL、模型名和 API Key。默认环境变量配置仍可选；自定义密钥在服务端加密保存，编辑时留空会保留原密钥。失败任务重试沿用该任务的模型分组。
 - 已建模并启用 RLS：分类、复习进度、复习记录、个人笔记和内容版本表。
 - 知识点卡片先展示回忆提示，揭示后再展示按需组织的参考内容、示例、易错点与追问。四档掌握度分别安排 6 小时、1 天、3 天、7 天后的复习；评分后自动前进，可撤销上次评分。跳过不计分，稍后复习会移到本轮末尾。个人笔记独立保存。
 - 首页按未读、较少接触和随机探索推荐知识点；「换一批」避开刚展示的内容。随便看看模式可无评分翻卡片，原有四档评分保留在「认真复习」。阅读知识点持续可见 8 秒后记为有效阅读，阅读秒数合并上报；知识库显示已浏览数量，不把阅读次数当成掌握度。
