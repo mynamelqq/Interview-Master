@@ -8,9 +8,10 @@ export const maxDuration = 300;
 export async function POST(request: Request) {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token) return Response.json({ error: "请先登录" }, { status: 401 });
-  let body: { jobId?: string };
+  let body: { jobId?: string; groupId?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求格式错误" }, { status: 400 }); }
   if (!body.jobId) return Response.json({ error: "缺少任务 ID" }, { status: 400 });
+  if (!body.groupId || typeof body.groupId !== "string") return Response.json({ error: "请先选择本次重试使用的模型分组" }, { status: 400 });
   const db = getRequestClient(token);
   const { data: auth, error: authError } = await db.auth.getUser(token);
   if (authError || !auth.user) return Response.json({ error: "登录已过期，请重新登录" }, { status: 401 });
@@ -18,10 +19,10 @@ export async function POST(request: Request) {
   if (profileError) return Response.json({ error: "无法验证管理员权限" }, { status: 503 });
   if (!profile.is_admin) return Response.json({ error: "只有管理员可以重试生成任务" }, { status: 403 });
   const { data: job, error: jobError } = await db.from("topic_generation_jobs")
-    .select("id,topic_id,input_title,status,raw_output,model_group_id").eq("id", body.jobId).eq("user_id", auth.user.id).single();
+    .select("id,topic_id,input_title,status,raw_output").eq("id", body.jobId).eq("user_id", auth.user.id).single();
   if (jobError || !job || !job.topic_id) return Response.json({ error: "找不到这项生成任务" }, { status: 404 });
   let config;
-  try { config = await resolveModelConfig(db, auth.user.id, job.model_group_id); }
+  try { config = await resolveModelConfig(db, auth.user.id, body.groupId); }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "模型分组不可用" }, { status: 400 }); }
   if (job.status !== "failed") return Response.json({ error: "只有失败的任务可以重试" }, { status: 409 });
   const { data: topic, error: topicError } = await db.from("topics")
@@ -38,7 +39,8 @@ export async function POST(request: Request) {
 
   const { data: restarted, error: restartError } = await db.from("topic_generation_jobs").update({
     status: "pending", error_message: null, raw_output: replaceExisting ? { regeneration: true } : null, finished_at: null,
-    created_at: new Date().toISOString(), model_name: config.model, prompt_version: "v6",
+    created_at: new Date().toISOString(), model_name: config.model,
+    model_group_id: body.groupId === "env" ? null : body.groupId, prompt_version: "v6",
   }).eq("id", job.id).eq("status", "failed").select("id").maybeSingle();
   if (restartError) return Response.json({ error: restartError.message }, { status: 500 });
   if (!restarted) return Response.json({ error: "任务已经开始重试" }, { status: 409 });

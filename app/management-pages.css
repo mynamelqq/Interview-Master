@@ -15,6 +15,8 @@
 .task-drawer-summary { display: grid; grid-template-columns: auto 1fr auto 1fr; align-items: baseline; gap: 8px; margin: 28px 0 24px; padding: 17px 18px; border: 1px solid #e3e9f0; border-radius: 9px; background: #fff; }
 .task-drawer-summary strong { color: #202938; font-size: 22px; }
 .task-drawer-summary span { color: #64748b; font-size: 11px; }
+.task-model-group { display: grid; gap: 7px; margin: -5px 0 20px; color: #526176; font-size: 12px; font-weight: 700; }
+.task-model-group select { width: 100%; min-height: 39px; padding: 0 10px; border: 1px solid #d9e2ee; border-radius: 7px; background: #fff; color: #26364b; font-size: 12px; }
 .task-filters { display: flex; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
 .task-filters button { padding: 8px 10px; border: 0; border-radius: 6px; background: none; color: #64748b; font-size: 12px; cursor: pointer; }
 .task-filters button.active { background: #eaf1fe; color: #286bd4; font-weight: 700; }
