@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getBrowserClient } from "@/lib/supabase";
 import { readCardContent } from "@/lib/card-content";
 import { MarkdownContent } from "@/components/markdown-content";
@@ -8,13 +8,15 @@ import { recommendPoints, type PointActivity, type PointCandidate } from "@/lib/
 import { readRecommendationHistory, recentRecommendationIds, rememberRecommendations, saveRecommendationHistory } from "@/lib/recommendation-history";
 import type { Category, KnowledgePoint, Topic } from "@/lib/types";
 import { preferredPoints } from "@/lib/recommendation-preferences";
+import { getOfflineTopic } from "@/lib/offline-topics";
 
-export function CasualCards({ userId, points, activities, topics, categories, onSeen, onControl, onExit, onOpenTopic }: {
+export function CasualCards({ userId, points, activities, topics, categories, offline, onSeen, onControl, onExit, onOpenTopic }: {
   userId: string;
   points: PointCandidate[];
   activities: Record<string, PointActivity>;
   topics: Topic[];
   categories: Category[];
+  offline: boolean;
   onSeen: (id: string) => void;
   onControl: (id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") => Promise<boolean>;
   onExit: () => void;
@@ -27,6 +29,7 @@ export function CasualCards({ userId, points, activities, topics, categories, on
   const [loading, setLoading] = useState(true);
   const [shown, setShown] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const current = queue[index];
   const topic = topics.find(item => item.id === current?.topic_id);
   const content = readCardContent(card?.content_md);
@@ -40,16 +43,26 @@ export function CasualCards({ userId, points, activities, topics, categories, on
   useEffect(() => {
     if (!current) return;
     let cancelled = false;
-    const db = getBrowserClient();
-    void db?.from("knowledge_points").select("*").eq("id", current.id).single().then(({ data, error }) => {
+    async function loadCard() {
+      let loaded: KnowledgePoint | null = null;
+      if (!offline) {
+        const db = getBrowserClient();
+        const { data, error } = await db!.from("knowledge_points").select("*").eq("id", current.id).single();
+        if (!error) loaded = data as KnowledgePoint;
+      }
+      if (!loaded) {
+        const saved = await getOfflineTopic(userId, current.topic_id).catch(() => undefined);
+        loaded = saved?.points.find(point => point.id === current.id) || null;
+      }
       if (cancelled) return;
-      setCard(error ? null : data as KnowledgePoint);
+      setCard(loaded);
       setLoading(false);
-      setLoadError(!!error);
-      if (!error) onSeen(current.id);
-    });
+      setLoadError(!loaded);
+      if (loaded) onSeen(current.id);
+    }
+    void loadCard();
     return () => { cancelled = true; };
-  }, [current, onSeen]);
+  }, [current, onSeen, offline, userId]);
 
   function changeCategory(id: string) {
     setCategoryId(id);
@@ -89,8 +102,8 @@ export function CasualCards({ userId, points, activities, topics, categories, on
 
   return <section className="page-wrap casual-page"><div className="casual-heading"><div><span className="eyebrow">随便看看 · 无需评分</span><h1 className="page-title">翻几张知识卡片</h1><p>想一想，再看参考内容。随时可以离开。</p></div><button className="text-btn" onClick={onExit}>返回首页</button></div>
     <label className="casual-filter">技术分类 <select value={categoryId} onChange={event => changeCategory(event.target.value)}><option value="all">全部分类</option>{categories.filter(category => preferredPoints(points, topics, categories, [category.id]).length > 0).map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
-    {!current ? <div className="empty">这个分类下还没有知识卡片。换一个分类看看。</div> : <article className="flashcard casual-card"><div className="card-top"><span>{topic?.title || "知识卡片"}</span><span>{index + 1} / {queue.length}</span></div><div className="card-question"><p className="card-prompt">{current.reason === "unread" ? "还没看过" : current.reason === "revisit" ? "重新接触" : "随机探索"}</p><h2>{current.title}</h2><p>在心里想一想，再看参考内容。</p></div>{loading ? <p role="status">正在加载卡片…</p> : loadError ? <p role="alert">卡片加载失败，请换一张重试。</p> : <>{!shown ? <button className="primary-btn" onClick={() => setShown(true)}>显示参考内容</button> : <div className="casual-answer"><MarkdownContent content={content.reference} /></div>}</>}
-      <div className="casual-actions"><button onClick={previous} disabled={index === 0}>上一张</button><button onClick={next}>下一张 →</button><button onClick={() => current && onOpenTopic(current.topic_id)}>阅读完整专题</button><button onClick={() => current && void onControl(current.id, activities[current.id]?.is_favorite ? "unfavorite" : "favorite")} aria-pressed={activities[current.id]?.is_favorite || false}>{activities[current.id]?.is_favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={() => void excludeCurrent()}>暂不推荐 7 天</button></div></article>}
+    {!current ? <div className="empty">这个分类下还没有知识卡片。换一个分类看看。</div> : <article className="flashcard casual-card" onTouchStart={event => { const touch = event.touches[0]; touchStart.current = { x: touch.clientX, y: touch.clientY }; }} onTouchEnd={event => { const start = touchStart.current; touchStart.current = null; if (!start) return; const touch = event.changedTouches[0]; const dx = touch.clientX - start.x; const dy = touch.clientY - start.y; if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.5) return; if (dx < 0) next(); else previous(); }}><div className="card-top"><span>{topic?.title || "知识卡片"}</span><span>{index + 1} / {queue.length}</span></div><div className="card-question"><p className="card-prompt">{current.reason === "unread" ? "还没看过" : current.reason === "revisit" ? "重新接触" : "随机探索"}</p><h2>{current.title}</h2><p>在心里想一想，再看参考内容。</p></div>{loading ? <p role="status">正在加载卡片…</p> : loadError ? <p role="alert">卡片加载失败，请换一张重试。</p> : <>{!shown ? <button className="primary-btn" onClick={() => setShown(true)}>显示参考内容</button> : <div className="casual-answer"><MarkdownContent content={content.reference} /></div>}</>}
+      <div className="casual-actions"><button onClick={previous} disabled={index === 0}>上一张</button><button onClick={next}>下一张 →</button><button onClick={() => current && onOpenTopic(current.topic_id)}>阅读完整专题</button>{!offline && <button onClick={() => current && void onControl(current.id, activities[current.id]?.is_favorite ? "unfavorite" : "favorite")} aria-pressed={activities[current.id]?.is_favorite || false}>{activities[current.id]?.is_favorite ? "★ 已收藏" : "☆ 收藏"}</button>}{!offline && <button onClick={() => void excludeCurrent()}>暂不推荐 7 天</button>}</div></article>}
   </section>;
 }
 

@@ -5,6 +5,7 @@ import { MarkdownContent } from "@/components/markdown-content";
 import { TopicAnswerFocus } from "@/components/topic-answer-focus";
 import { readTopicAnswer } from "@/lib/topic-answer";
 import type { KnowledgePoint, Topic } from "@/lib/types";
+import { getBrowserClient } from "@/lib/supabase";
 
 export type ReaderPreferences = {
   size: "small" | "standard" | "large" | "xlarge";
@@ -16,7 +17,7 @@ export type ReaderPreferences = {
 export const defaultReaderPreferences: ReaderPreferences = {
   size: "standard", leading: "standard", background: "white", width: "standard",
 };
-type ReadingBookmark = { progress: number; pointId: string | null };
+type ReadingBookmark = { progress: number; pointId: string | null; savedAt?: string };
 
 const options = [
   { key: "size", label: "正文大小", values: [["small", "小"], ["standard", "标准"], ["large", "大"], ["xlarge", "特大"]] },
@@ -25,7 +26,7 @@ const options = [
   { key: "width", label: "正文宽度", values: [["narrow", "窄"], ["standard", "标准"], ["wide", "宽"]] },
 ] as const;
 
-export function FocusReader({ topic, category, sections, points, notes, userId, initialPointId, preferences, onPreferencesChange, onBack, backLabel = "知识库", onExit }: {
+export function FocusReader({ topic, category, sections, points, notes, userId, initialPointId, preferences, onPreferencesChange, savedOffline, onToggleOffline, onBack, backLabel = "知识库", onExit }: {
   topic: Topic;
   category: string;
   sections: KnowledgePoint[];
@@ -35,6 +36,8 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
   initialPointId: string | null;
   preferences: ReaderPreferences;
   onPreferencesChange: (next: ReaderPreferences) => void;
+  savedOffline: boolean;
+  onToggleOffline: () => void;
   onBack: () => void;
   backLabel?: string;
   onExit: (pointId: string | null) => void;
@@ -57,19 +60,58 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
     let readyToSave = false;
     const readyTimer = window.setTimeout(() => { readyToSave = true; }, 250);
     const positionKey = `im:reading-position:${userId}:${topic.id}`;
+    const db = getBrowserClient();
+    let localBookmark: ReadingBookmark | null = null;
+    let latestPosition: Pick<ReadingBookmark, "progress" | "pointId"> | null = null;
+    let cancelled = false;
+    function restore(saved: ReadingBookmark) {
+      if (initialPointId || saved.progress <= 3 || saved.progress >= 97) return;
+      queueMicrotask(() => setBookmark(saved));
+      if (!window.matchMedia("(max-width: 760px)").matches) return;
+      requestAnimationFrame(() => {
+        if (movedRef.current) return;
+        readyToSave = false;
+        const point = saved.pointId && document.getElementById(`focus-point-${saved.pointId}`);
+        if (point) point.scrollIntoView({ behavior: "instant", block: "start" });
+        else window.scrollTo({ top: Math.max(0, (document.documentElement.scrollHeight - window.innerHeight) * saved.progress / 100), behavior: "instant" });
+        setBookmark(null);
+        window.setTimeout(() => { readyToSave = true; }, 250);
+      });
+    }
     try {
-      const saved = JSON.parse(window.localStorage.getItem(positionKey) || "null") as ReadingBookmark | null;
-      queueMicrotask(() => setBookmark(saved && Number.isFinite(saved.progress) && saved.progress > 3 && saved.progress < 97 ? saved : null));
+      localBookmark = JSON.parse(window.localStorage.getItem(positionKey) || "null") as ReadingBookmark | null;
+      if (localBookmark && Number.isFinite(localBookmark.progress)) restore(localBookmark);
     } catch { queueMicrotask(() => setBookmark(null)); }
+    if (navigator.onLine && db) {
+      void db.from("user_reading_positions").select("point_id,progress,updated_at").eq("user_id", userId).eq("topic_id", topic.id).maybeSingle().then(({ data }) => {
+        if (cancelled || !data) return;
+        if (localBookmark?.savedAt && localBookmark.savedAt > data.updated_at) {
+          void db.from("user_reading_positions").upsert({ user_id: userId, topic_id: topic.id, point_id: localBookmark.pointId, progress: localBookmark.progress, updated_at: localBookmark.savedAt }, { onConflict: "user_id,topic_id" });
+          return;
+        }
+        const remote = { pointId: data.point_id, progress: data.progress, savedAt: data.updated_at };
+        window.localStorage.setItem(positionKey, JSON.stringify(remote));
+        if (!movedRef.current) restore(remote);
+      });
+    }
     function savePosition() {
-      if (!movedRef.current) return;
+      if (!movedRef.current || !latestPosition) return;
+      const { progress: current, pointId } = latestPosition;
+      const savedAt = new Date().toISOString();
+      window.localStorage.setItem(positionKey, JSON.stringify({ progress: current, pointId, savedAt }));
+      if (pointId) window.localStorage.setItem(`im:last-point:${userId}:${topic.id}`, pointId);
+      window.localStorage.setItem(`im:last-topic:${userId}`, topic.id);
+      window.localStorage.setItem(`im:last-topic-at:${userId}`, savedAt);
+      if (navigator.onLine && db) void db.from("user_reading_positions").upsert({ user_id: userId, topic_id: topic.id, point_id: pointId, progress: current, updated_at: savedAt }, { onConflict: "user_id,topic_id" });
+    }
+    function readPosition(): Pick<ReadingBookmark, "progress" | "pointId"> {
       const distance = document.documentElement.scrollHeight - window.innerHeight;
       const current = distance > 0 ? Math.min(100, Math.round(window.scrollY / distance * 100)) : 100;
       const visible = ordered.filter(point => {
         const element = document.getElementById(`focus-point-${point.id}`);
         return element && element.getBoundingClientRect().top < window.innerHeight * .48;
       });
-      window.localStorage.setItem(positionKey, JSON.stringify({ progress: current, pointId: visible.at(-1)?.id || null }));
+      return { progress: current, pointId: visible.at(-1)?.id || null };
     }
     function update() {
       const distance = document.documentElement.scrollHeight - window.innerHeight;
@@ -84,14 +126,16 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
       update();
       if (!readyToSave) return;
       movedRef.current = true;
+      latestPosition = readPosition();
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(savePosition, 500);
+      saveTimerRef.current = setTimeout(savePosition, 2000);
     }
     if (initialPointId) document.getElementById(`focus-point-${initialPointId}`)?.scrollIntoView({ behavior: "auto", block: "start" });
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", update);
     return () => {
+      cancelled = true;
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", update);
       window.clearTimeout(readyTimer);
@@ -141,7 +185,7 @@ export function FocusReader({ topic, category, sections, points, notes, userId, 
 
   return <div className={`focus-reader focus-size-${preferences.size} focus-leading-${preferences.leading} focus-bg-${preferences.background} focus-width-${preferences.width}`}>
     <header className="focus-header">
-      <div className="focus-header-inner"><button className="focus-back" onClick={onBack}>← <span>返回{backLabel}</span></button><span className="focus-breadcrumb">{category} / {topic.title}</span><div className="focus-tools"><button onClick={() => { setTocOpen(value => !value); setSettingsOpen(false); }} aria-expanded={tocOpen}>目录</button><button onClick={() => { setSettingsOpen(value => !value); setTocOpen(false); }} aria-expanded={settingsOpen}>阅读设置</button><button onClick={() => onExit(activeId)}>退出专注</button></div></div>
+      <div className="focus-header-inner"><button className="focus-back" onClick={onBack}>← <span>返回{backLabel}</span></button><span className="focus-breadcrumb">{category} / {topic.title}</span><div className="focus-tools">{topic.status === "published" && <button onClick={onToggleOffline} aria-pressed={savedOffline}>{savedOffline ? "已离线" : "存离线"}</button>}<button onClick={() => { setTocOpen(value => !value); setSettingsOpen(false); }} aria-expanded={tocOpen}>目录</button><button onClick={() => { setSettingsOpen(value => !value); setTocOpen(false); }} aria-expanded={settingsOpen}>阅读设置</button><button className="focus-exit" onClick={() => onExit(activeId)}>退出专注</button></div></div>
       <div className="focus-progress-track" role="progressbar" aria-label="阅读进度" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${progress}%` }} /></div>
     </header>
 

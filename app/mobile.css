@@ -1,0 +1,74 @@
+.mobile-home,.mobile-profile{display:none}
+.library-read-mobile{display:none}
+@media(min-width:761px){.mobile-profile{display:block;max-width:650px;margin:auto;padding:70px 30px}.mobile-profile h1{font-size:32px;color:#18312d}.mobile-profile .mobile-section-title{display:flex;justify-content:space-between;margin:35px 0 15px}.mobile-saved-list{display:grid;gap:10px}.mobile-saved-list button{display:grid;gap:5px;text-align:left;padding:16px;border:1px solid #dce6df;border-radius:10px;background:#fff}.mobile-signout{margin-top:30px;border:0;background:none;color:#9b4e43}}
+
+@media(max-width:760px){
+  .main-area{background:#f7f9f6}
+  .mobile-bar{position:sticky;top:0;z-index:18;height:calc(58px + env(safe-area-inset-top));padding:calc(8px + env(safe-area-inset-top)) 22px 8px;background:#f7f9f6;border-bottom:1px solid #e2e9e3}
+  .mobile-bar .mobile-menu-button{display:none}
+  .mobile-bar .brand{display:flex;align-items:center;gap:9px}
+  .mobile-bar .brand-mark{width:32px;height:32px;border-radius:8px;font-size:12px}
+  .mobile-bar .brand strong{font-size:15px;letter-spacing:-.3px}
+  .workspace-topbar{display:none}
+  .shell-view-library .workspace-topbar{display:flex;height:55px;padding:0 22px;background:#f7f9f6}
+  .shell-view-library .workspace-search{width:100%}
+  .shell-view-library .workspace-search input{width:100%}
+  .shell-view-library .topbar-end{display:none}
+  .library-read-desktop,.library-categories-heading button,.library-page .global-draft-results{display:none}
+  .library-read-mobile{display:inline}
+  .home-page{display:none}
+  .mobile-home,.mobile-profile{display:block;padding:30px 22px calc(108px + env(safe-area-inset-bottom));max-width:560px;margin:auto}
+  .mobile-home-intro{padding:14px 0 31px}
+  .mobile-home-kicker{display:block;color:#1d6c56;font-size:12px;font-weight:700;letter-spacing:.02em}
+  .mobile-home-intro h1,.mobile-profile h1{font-size:38px;line-height:1.25;letter-spacing:-1.8px;color:#18312d;margin:12px 0 9px}
+  .mobile-home-intro p,.mobile-profile>p{font-size:15px;color:#71817d;line-height:1.7;margin:0}
+  .mobile-section-title{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 14px;gap:10px}
+  .mobile-section-title h2{font-size:17px;color:#18312d;margin:0;letter-spacing:-.3px}
+  .mobile-section-title>span{font-size:12px;color:#82928a}
+  .mobile-feature-topic{position:relative;overflow:hidden;background:#e6f1e9;border:1px solid #c9ddcf;border-radius:18px;padding:27px 24px 21px;color:#1b3f32}
+  .mobile-feature-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:#1d6c56;color:white;font-size:20px;margin-bottom:24px}
+  .mobile-feature-topic h3{font-size:24px;line-height:1.38;letter-spacing:-.6px;margin:0 0 10px;max-width:18em}
+  .mobile-feature-topic p{font-size:13px;line-height:1.7;color:#507362;margin:0 0 27px}
+  .mobile-feature-footer{border-top:1px solid #c6dccc;padding-top:17px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .mobile-feature-footer>span{color:#62806d;font-size:12px}
+  .mobile-feature-footer button{border:0;background:#1d6c56;color:white;border-radius:10px;padding:11px 14px;font-size:13px;font-weight:700}
+  .mobile-feature-footer button span{margin-left:8px}
+  .mobile-card-entry,.mobile-continue-entry{width:100%;border:1px solid #dce6df;background:#fff;border-radius:15px;display:flex;align-items:center;text-align:left;color:#18312d;margin-top:20px;padding:18px;gap:15px}
+  .mobile-card-entry>span:nth-child(2),.mobile-continue-entry>span:first-child{flex:1;min-width:0;display:grid;gap:5px}
+  .mobile-card-entry strong,.mobile-continue-entry strong{font-size:15px;line-height:1.4}
+  .mobile-card-entry small,.mobile-continue-entry small{font-size:12px;color:#82928a;line-height:1.4}
+  .mobile-card-entry>span:last-child,.mobile-continue-entry>span:last-child{color:#1d6c56;font-size:20px}
+  .mobile-card-entry-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:12px;background:#ecf3ed;color:#1d6c56;font-size:24px}
+  .mobile-continue-title{margin-top:35px}
+  .mobile-continue-entry{margin-top:0}
+  .mobile-empty{font-size:13px;line-height:1.7;color:#82928a;padding:16px;border:1px dashed #cddbd1;border-radius:12px}
+  .mobile-offline-banner{padding:12px 14px;background:#fff4df;color:#76572b;border-radius:10px;font-size:12px;margin:0 0 22px}
+  .mobile-nav{height:calc(66px + env(safe-area-inset-bottom));align-items:flex-start;gap:0;padding:6px 6px env(safe-area-inset-bottom);background:#fff;border-top:1px solid #e2e9e3;box-shadow:0 -6px 22px rgba(24,49,45,.04)}
+  .mobile-nav button{flex:1;display:grid;justify-items:center;gap:2px;min-height:52px;padding:4px 0;color:#82928a;font-size:11px;font-weight:600}
+  .mobile-nav button span{font-size:22px;line-height:1.1}
+  .mobile-nav button.active{color:#1d6c56}
+  .mobile-profile .mobile-section-title{margin-top:37px}
+  .mobile-saved-list{display:grid;gap:10px}
+  .mobile-saved-list button{display:grid;gap:5px;width:100%;text-align:left;border:1px solid #dce6df;background:white;border-radius:12px;padding:16px;color:#18312d}
+  .mobile-saved-list small{color:#71817d}
+  .mobile-install-hint{margin:30px 0 0;padding:14px;border-radius:10px;background:#eaf2eb;color:#4f725d;font-size:12px;line-height:1.7}
+  .mobile-signout{margin-top:38px;border:0;background:none;color:#9b4e43;padding:8px 0;font-size:13px}
+  .casual-page{padding:27px 20px calc(100px + env(safe-area-inset-bottom))}
+  .casual-heading .eyebrow{color:#1d6c56}
+  .casual-heading .page-title{font-size:29px;letter-spacing:-1px}
+  .casual-heading .text-btn{display:none}
+  .casual-card{margin:22px 0 20px;touch-action:pan-y;border-color:#dce6df;border-radius:16px;box-shadow:none}
+  .casual-card .card-question{padding:39px 0 29px}
+  .casual-card .card-question h2{font-size:25px;color:#18312d}
+  .casual-actions button{color:#1d6c56}
+  .focus-reader{min-height:100dvh}
+  .focus-header-inner{height:calc(58px + env(safe-area-inset-top));padding:env(safe-area-inset-top) 18px 0}
+  .focus-drawer-backdrop,.focus-toc{top:calc(58px + env(safe-area-inset-top))}
+  .focus-settings{top:calc(64px + env(safe-area-inset-top))}
+  .focus-tools{gap:1px}
+  .focus-header .focus-exit{display:none}
+  .focus-article{padding:41px 22px calc(145px + env(safe-area-inset-bottom))}
+  .focus-point-nav{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100vw - 28px)}
+  .focus-back-to-top{bottom:max(78px,calc(68px + env(safe-area-inset-bottom)))}
+  .focus-bg-dark .focus-article{color:#d7e1ef}
+}

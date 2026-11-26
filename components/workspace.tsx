@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { User } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getBrowserClient } from "@/lib/supabase";
 import type { Category, GenerationJob, KnowledgePoint, Topic } from "@/lib/types";
 import { MarkdownContent } from "@/components/markdown-content";
@@ -23,12 +23,42 @@ import { defaultRecommendationPreferences, preferredPoints, type RecommendationP
 import { RecommendationSettings } from "@/components/recommendation-settings";
 import { categoryCoverage } from "@/lib/category-coverage";
 import { FavoritesPanel } from "@/components/favorites-panel";
+import { MobileHome } from "@/components/mobile-home";
+import { getOfflineTopic, listOfflineTopics, removeOfflineTopic, saveOfflineTopic, type OfflineTopic } from "@/lib/offline-topics";
 
-type View = "home" | "library" | "favorites" | "notes" | "drafts" | "create" | "reader" | "browse";
+type View = "home" | "library" | "favorites" | "notes" | "drafts" | "create" | "reader" | "browse" | "profile";
 type PointsLoad = { topicId: string | null; status: "idle" | "loading" | "loaded" | "error" };
 type TopicInsight = { pointCount: number; verifiedCount: number; ratedCount: number; masteredCount: number; weakCount: number; viewedCount: number; lastViewedAt: string | null; lastReviewedAt: string | null };
 type SearchPoint = PointCandidate;
 const db = getBrowserClient();
+
+class SessionExpiredError extends Error {
+  constructor() { super("登录已过期，请重新登录"); }
+}
+
+async function postGenerationRequest(client: SupabaseClient, path: string, body: object): Promise<Response> {
+  const { data, error } = await client.auth.getSession();
+  if (error || !data.session) throw new SessionExpiredError();
+  let token = data.session.access_token;
+  // A generation can keep using this token after the HTTP response has returned.
+  if (data.session.expires_at && data.session.expires_at * 1000 - Date.now() < 15 * 60 * 1000) {
+    const { data: refreshed, error: refreshError } = await client.auth.refreshSession();
+    if (refreshError || !refreshed.session) throw new SessionExpiredError();
+    token = refreshed.session.access_token;
+  }
+  const send = (token: string) => fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  let response = await send(token);
+  if (response.status === 401) {
+    const { data: refreshed, error: refreshError } = await client.auth.refreshSession();
+    if (refreshError || !refreshed.session) throw new SessionExpiredError();
+    response = await send(refreshed.session.access_token);
+  }
+  return response;
+}
 
 function chooseRandomTopic(topics: Topic[], previousId: string | null): Topic | null {
   const choices = topics.filter(topic => topics.length === 1 || topic.id !== previousId);
@@ -41,6 +71,8 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
   const authUserIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const [offlineTopics, setOfflineTopics] = useState<OfflineTopic[]>([]);
   const [view, setView] = useState<View>(initialTopicId ? "reader" : "home");
   const [readerReturnView, setReaderReturnView] = useState<"library" | "favorites" | "drafts">("library");
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -88,6 +120,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   const [lastTopicId, setLastTopicId] = useState<string | null>(null);
   const [lastPointId, setLastPointId] = useState<string | null>(null);
   const [lastRandomTopicId, setLastRandomTopicId] = useState<string | null>(null);
+  const shortcutHandled = useRef(false);
   const pendingReadTargetId = useRef<string | null>(null);
   const activityRef = useRef(pointActivity);
   useEffect(() => { activityRef.current = pointActivity; }, [pointActivity]);
@@ -126,7 +159,8 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     let progressRows: Awaited<ReturnType<typeof fetchProgressRows>>;
     let activityRows: PointActivity[];
     try { [pointRows, progressRows, activityRows] = await Promise.all([fetchPointRows(), fetchProgressRows(), fetchActivityRows()]); }
-    catch { setInsightsStatus("error"); return; }
+    catch { if (navigator.onLine) setInsightsStatus("error"); return; }
+    if (!navigator.onLine) return;
     pointRows = pointRows.filter(point => point.parent_id);
     const progress = new Map(progressRows.map(row => [row.knowledge_point_id, row]));
     const activities = Object.fromEntries(activityRows.map(row => [row.knowledge_point_id, row]));
@@ -156,14 +190,25 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
 
   const load = useCallback(async () => {
     if (!db) return;
+    if (!navigator.onLine && currentUserId) {
+      const saved = await listOfflineTopics(currentUserId).catch(() => []);
+      setOfflineTopics(saved);
+      setTopics(saved.map(item => item.topic));
+      setTopicsLoad("loaded");
+      return;
+    }
     const [topicResult, categoryResult] = await Promise.all([
       db.from("topics").select("*").order("created_at", { ascending: false }),
       db.from("categories").select("*").order("sort_order").order("name"),
     ]);
-    if (topicResult.error) { setError(topicResult.error.message); setTopicsLoad("error"); }
+    if (topicResult.error) {
+      const saved = currentUserId ? await listOfflineTopics(currentUserId).catch(() => []) : [];
+      if (saved.length) { setOfflineTopics(saved); setTopics(saved.map(item => item.topic)); setTopicsLoad("loaded"); }
+      else { setError(topicResult.error.message); setTopicsLoad("error"); }
+    }
     else { setTopics(topicResult.data as Topic[]); setTopicsLoad("loaded"); }
     if (!categoryResult.error) setCategories(categoryResult.data as Category[]);
-  }, []);
+  }, [currentUserId]);
   const loadJobs = useCallback(async () => {
     if (!db) return;
     const rows: GenerationJob[] = [];
@@ -173,7 +218,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       rows.push(...(data as GenerationJob[] || []));
       if (!data || data.length < 100) break;
     }
-    const stale = rows.filter(job => (job.status === "pending" || job.status === "running") && Date.now() - new Date(job.created_at).getTime() > 15 * 60 * 1000);
+    const stale = rows.filter(job => (job.status === "pending" || job.status === "running") && Date.now() - new Date(job.created_at).getTime() > 7 * 60 * 1000);
     for (const job of stale) {
       await db.from("topic_generation_jobs").update({ status: "failed", error_message: job.raw_output?.regeneration ? "重新生成超时，原专题内容已保留，可重试。" : "生成任务超时，请重新创建专题。", finished_at: new Date().toISOString() }).eq("id", job.id).in("status", ["pending", "running"]);
       if (job.topic_id && !job.raw_output?.regeneration) await db.from("topics").update({ generation_status: "failed" }).eq("id", job.topic_id).in("generation_status", ["pending", "running"]);
@@ -194,10 +239,12 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
 
   useEffect(() => {
     if (!db) { queueMicrotask(() => setReady(true)); return; }
+    const offlineIdentityKey = "im:offline-identity";
     function applyUser(next: User | null) {
       if (authUserIdRef.current !== (next?.id || null)) {
         authUserIdRef.current = next?.id || null;
         setTopics([]);
+        setOfflineTopics([]);
         setIsAdmin(null);
         setView(initialTopicId ? "reader" : "home");
         setTopicsLoad("loading");
@@ -219,12 +266,52 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       }
       setUser(next);
     }
-    db.auth.getUser().then(({ data }) => { applyUser(data.user); setReady(true); });
-    const { data: listener } = db.auth.onAuthStateChange((_event, session) => applyUser(session?.user || null));
+    function remember(user: User) {
+      window.localStorage.setItem(offlineIdentityKey, JSON.stringify({ id: user.id, email: user.email }));
+    }
+    function restoreOfflineUser(): User | null {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(offlineIdentityKey) || "null");
+        return typeof saved?.id === "string" ? saved as User : null;
+      } catch { return null; }
+    }
+    if (!navigator.onLine) {
+      applyUser(restoreOfflineUser());
+      queueMicrotask(() => { setOffline(true); setReady(true); });
+    } else {
+      db.auth.getUser().then(({ data }) => {
+        if (data.user) { remember(data.user); applyUser(data.user); }
+        else if (!navigator.onLine) { applyUser(restoreOfflineUser()); setOffline(true); }
+        else applyUser(null);
+        setReady(true);
+      });
+    }
+    const { data: listener } = db.auth.onAuthStateChange((event, session) => {
+      if (session?.user) { remember(session.user); applyUser(session.user); setOffline(!navigator.onLine); }
+      else if (event === "SIGNED_OUT" && navigator.onLine) { window.localStorage.removeItem(offlineIdentityKey); applyUser(null); }
+      else if (navigator.onLine) applyUser(null);
+    });
     return () => listener.subscription.unsubscribe();
   }, [initialTopicId]);
   useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => { window.removeEventListener("online", update); window.removeEventListener("offline", update); };
+  }, []);
+  useEffect(() => {
+    if (!user || offline) return;
+    const refresh = () => { void load(); void loadInsights(); };
+    window.addEventListener("online", refresh);
+    return () => window.removeEventListener("online", refresh);
+  }, [user, offline, load, loadInsights]);
+  useEffect(() => {
+    if (!currentUserId) return;
+    void listOfflineTopics(currentUserId).then(setOfflineTopics).catch(() => {});
+  }, [currentUserId]);
+  useEffect(() => {
     if (!db || !user) return;
+    if (offline) { queueMicrotask(() => setIsAdmin(false)); return; }
     let cancelled = false;
     void db.from("profiles").select("is_admin").eq("id", user.id).single().then(({ data, error: roleError }) => {
       if (cancelled) return;
@@ -232,12 +319,22 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       setIsAdmin(!roleError && data?.is_admin === true);
     });
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, offline]);
   useEffect(() => {
     if (!user) return;
     const topicId = window.localStorage.getItem(`im:last-topic:${user.id}`);
     queueMicrotask(() => { setLastTopicId(topicId); setLastPointId(topicId ? window.localStorage.getItem(`im:last-point:${user.id}:${topicId}`) : null); });
-  }, [user]);
+    if (!offline && db) {
+      void db.from("user_reading_positions").select("topic_id,point_id,updated_at").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(1).maybeSingle().then(({ data }) => {
+        if (!data || data.updated_at <= (window.localStorage.getItem(`im:last-topic-at:${user.id}`) || "")) return;
+        window.localStorage.setItem(`im:last-topic:${user.id}`, data.topic_id);
+        window.localStorage.setItem(`im:last-topic-at:${user.id}`, data.updated_at);
+        if (data.point_id) window.localStorage.setItem(`im:last-point:${user.id}:${data.topic_id}`, data.point_id);
+        setLastTopicId(data.topic_id);
+        setLastPointId(data.point_id);
+      });
+    }
+  }, [user, offline]);
   useEffect(() => {
     if (!user) { readerPreferencesUserId.current = null; return; }
     if (readerPreferencesUserId.current === user.id) return;
@@ -249,9 +346,11 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   }, [user]);
   useEffect(() => () => { if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current); }, []);
   useEffect(() => { if (user) { void Promise.resolve().then(load); } }, [user, load]);
-  useEffect(() => { if (user) { void Promise.resolve().then(loadInsights); } }, [user, loadInsights]);
+  useEffect(() => { if (user && offline) { void Promise.resolve().then(load); } }, [user, offline, load]);
+  useEffect(() => { if (user && !offline) { void Promise.resolve().then(loadInsights); } }, [user, offline, loadInsights]);
   useEffect(() => {
     if (!db || !currentUserId) return;
+    if (offline) { queueMicrotask(() => { setRecommendationPreferencesReady(true); setRecommendationPreferences(defaultRecommendationPreferences); }); return; }
     let cancelled = false;
     void db.from("user_recommendation_preferences").select("category_ids,random_percent").eq("user_id", currentUserId).maybeSingle().then(({ data, error: loadError }) => {
       if (cancelled) return;
@@ -260,7 +359,15 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       setRecommendationPreferencesReady(true);
     });
     return () => { cancelled = true; };
-  }, [currentUserId]);
+  }, [currentUserId, offline]);
+  useEffect(() => {
+    if (!offline) return;
+    queueMicrotask(() => {
+      setSearchPoints(offlineTopics.flatMap(item => item.points.filter(point => point.parent_id).map(point => ({ id: point.id, topic_id: point.topic_id, title: point.title }))));
+      setTopicInsights(Object.fromEntries(offlineTopics.map(item => [item.topic.id, { ...noInsight, pointCount: item.points.filter(point => point.parent_id).length }])));
+      setInsightsStatus("loaded");
+    });
+  }, [offline, offlineTopics]);
   useEffect(() => {
     if (!user || isAdmin !== true) return;
     void Promise.resolve().then(loadJobs);
@@ -270,13 +377,30 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   useEffect(() => {
     if (!db || !selectedId || !user) return;
     let cancelled = false;
+    if (offline) {
+      void getOfflineTopic(user.id, selectedId).then(saved => {
+        if (cancelled) return;
+        if (saved) { setPoints(saved.points); setPointsLoad({ topicId: selectedId, status: "loaded" }); setReviewsReady(true); }
+        else setPointsLoad({ topicId: selectedId, status: "error" });
+      });
+      return () => { cancelled = true; };
+    }
     db.from("knowledge_points").select("*").eq("topic_id", selectedId).order("sort_order").then(({ data, error: loadError }) => {
       if (cancelled) return;
-      if (loadError) { setError(loadError.message); setPointsLoad({ topicId: selectedId, status: "error" }); }
+      if (loadError) {
+        void getOfflineTopic(user.id, selectedId).then(saved => {
+          if (cancelled) return;
+          if (saved) { setPoints(saved.points); setPointsLoad({ topicId: selectedId, status: "loaded" }); setReviewsReady(true); }
+          else { setError(loadError.message); setPointsLoad({ topicId: selectedId, status: "error" }); }
+        });
+      }
       else {
         const loaded = data as KnowledgePoint[];
         setPoints(loaded);
         setPointsLoad({ topicId: selectedId, status: "loaded" });
+        void getOfflineTopic(user.id, selectedId).then(saved => {
+          if (saved && loaded.length) void saveOfflineTopic(user.id, saved.topic, saved.categoryName, loaded);
+        }).catch(() => {});
         const ids = loaded.filter(point => point.parent_id).map(point => point.id);
         const sectionIds = loaded.filter(point => !point.parent_id).map(point => point.id);
         if (!sectionIds.length) { setMastery({}); setReviewProgress({}); setNotes({}); setReviewsReady(true); return; }
@@ -297,7 +421,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       }
     });
     return () => { cancelled = true; };
-  }, [selectedId, user]);
+  }, [selectedId, user, offline]);
   useEffect(() => {
     if (view !== "reader" || mode !== "read") return;
     const elements = Array.from(document.querySelectorAll<HTMLElement>(".article .point-block, .article section[id]"));
@@ -418,18 +542,18 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     return true;
   }
   const categoryPathById = new Map(categoryPaths(categories).map(category => [category.id, category.path]));
-  const categoryName = (id: string | null) => id ? categoryPathById.get(id) || "未分类" : "未分类";
+  const categoryName = (id: string | null) => id ? categoryPathById.get(id) || offlineTopics.find(item => item.topic.category_id === id)?.categoryName || "未分类" : "未分类";
 
   function openTopic(id: string, pointId?: string, chapterId?: string) {
     setReaderReturnView(view === "favorites" ? "favorites" : topics.find(topic => topic.id === id)?.status === "draft" ? "drafts" : "library");
     pendingReadTargetId.current = chapterId ? `section-${chapterId}` : pointId ? `point-${pointId}` : null;
     selectedIdRef.current = id;
     setSelectedId(id); setView("reader"); setMode("read");
-    setFocus(false);
+    setFocus(window.matchMedia("(max-width: 760px)").matches);
     setReadingNavOpen(false);
     setPoints([]); setPointsLoad({ topicId: id, status: "loading" }); setMastery({}); setReviewProgress({}); setReviewsReady(false); setNotes({});
-    setActivePointId(null); setClosedSections([]); setTocOpen(false); setMobileNavOpen(false);
-    if (user) { window.localStorage.setItem(`im:last-topic:${user.id}`, id); setLastTopicId(id); setLastPointId(window.localStorage.getItem(`im:last-point:${user.id}:${id}`)); }
+    setActivePointId(pointId ? `point-${pointId}` : null); setClosedSections([]); setTocOpen(false); setMobileNavOpen(false);
+    if (user) { window.localStorage.setItem(`im:last-topic:${user.id}`, id); window.localStorage.setItem(`im:last-topic-at:${user.id}`, new Date().toISOString()); setLastTopicId(id); setLastPointId(window.localStorage.getItem(`im:last-point:${user.id}:${id}`)); }
     window.history.pushState({}, "", `/knowledge/${id}`);
   }
   function openRandomTopic() {
@@ -438,6 +562,34 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     setLastRandomTopicId(topic.id);
     openTopic(topic.id);
   }
+  async function toggleOfflineTopic() {
+    if (!user || !selected || selected.status !== "published" || pointsLoad.status !== "loaded") return;
+    try {
+      if (offlineTopics.some(item => item.topic.id === selected.id)) await removeOfflineTopic(user.id, selected.id);
+      else await saveOfflineTopic(user.id, selected, categoryName(selected.category_id), points);
+      const saved = await listOfflineTopics(user.id);
+      setOfflineTopics(saved);
+      if (offline) setTopics(saved.map(item => item.topic));
+    } catch { setError("保存离线专题失败，请检查浏览器存储空间。"); }
+  }
+  useEffect(() => {
+    if (shortcutHandled.current || !user || topicsLoad !== "loaded") return;
+    const mode = new URLSearchParams(window.location.search).get("mode");
+    shortcutHandled.current = true;
+    queueMicrotask(() => {
+      if (mode === "cards") setView("browse");
+      if (mode === "continue") {
+        const topicId = window.localStorage.getItem(`im:last-topic:${user.id}`);
+        if (topicId && topics.some(topic => topic.id === topicId)) openTopic(topicId);
+      }
+      if (mode) window.history.replaceState(window.history.state, "", window.location.pathname);
+    });
+  // The shortcut is consumed once after the first topic load.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, topicsLoad, topics]);
+  useEffect(() => {
+    if (view === "reader" && !focus && window.matchMedia("(max-width: 760px)").matches) queueMicrotask(() => setFocus(true));
+  }, [view, focus]);
   const onPointViewed = useCallback((id: string) => {
     if (!user || !selectedId) return;
     const now = new Date().toISOString();
@@ -450,7 +602,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     setLastPointId(id);
   }, [selectedId, user]);
   const onCardSeen = useCallback((id: string) => {
-    if (!db) return;
+    if (!db || !navigator.onLine) return;
     void db.rpc("record_point_activity", { events: [{ knowledge_point_id: id, views: 0, seconds: 0, cards: 1 }] }).then(({ error: saveError }) => {
       if (saveError) { setError(`卡片浏览记录保存失败：${saveError.message}`); return; }
       const now = new Date().toISOString();
@@ -476,6 +628,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     setReaderPreferences(next);
     if (!user || !db) return;
     window.localStorage.setItem(`im:reader-preferences:${user.id}`, JSON.stringify(next));
+    if (offline) return;
     if (preferenceSaveTimer.current) clearTimeout(preferenceSaveTimer.current);
     preferenceSaveTimer.current = setTimeout(() => {
       void db.auth.updateUser({ data: { ...user.user_metadata, reader_preferences: next } }).then(({ error: saveError }) => {
@@ -495,8 +648,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (!db || isAdmin !== true) return null;
     setBusy(true); setError("");
     try {
-      const { data: session } = await db.auth.getSession();
-      const response = await fetch("/api/topics/generate", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.session?.access_token || ""}` }, body: JSON.stringify({ titles }) });
+      const response = await postGenerationRequest(db, "/api/topics/generate", { titles });
       const result: { error?: string; created?: { title: string }[]; failed?: { title: string; error: string }[] } = await response.json();
       const created = result.created || [];
       const failed = result.failed || [];
@@ -509,7 +661,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       navigate("home");
       setTaskDrawerOpen(true);
       return [];
-    } catch { setError("网络请求失败，请重试。"); return null; }
+    } catch (error) { setError(error instanceof SessionExpiredError ? error.message : "网络请求失败，请重试。"); return null; }
     finally { setBusy(false); }
   }
   async function regeneratePublishedTopic(topic: Topic) {
@@ -517,33 +669,23 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (!window.confirm(`重新生成「${topic.title}」？生成成功后会替换专题内容，并重置知识点的学习记录和笔记；生成失败时原内容会保留。`)) return;
     setRegeneratingTopicId(topic.id); setError("");
     try {
-      const { data: session } = await db.auth.getSession();
-      const response = await fetch("/api/topics/regenerate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.session?.access_token || ""}` },
-        body: JSON.stringify({ topicId: topic.id }),
-      });
+      const response = await postGenerationRequest(db, "/api/topics/regenerate", { topicId: topic.id });
       const result = await response.json();
       if (!response.ok) { setError(result.error || "重新生成失败"); return; }
       await loadJobs();
       setTaskDrawerOpen(true);
-    } catch { setError("重新生成请求失败，请稍后再试。"); }
+    } catch (error) { setError(error instanceof SessionExpiredError ? error.message : "重新生成请求失败，请稍后再试。"); }
     finally { setRegeneratingTopicId(null); }
   }
   async function retryJob(job: GenerationJob) {
     if (!db || isAdmin !== true || job.status !== "failed" || retryingJobId) return;
     setRetryingJobId(job.id); setError("");
     try {
-      const { data: session } = await db.auth.getSession();
-      const response = await fetch("/api/topics/retry", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.session?.access_token || ""}` },
-        body: JSON.stringify({ jobId: job.id }),
-      });
+      const response = await postGenerationRequest(db, "/api/topics/retry", { jobId: job.id });
       const result = await response.json();
       if (!response.ok) { setError(result.error || "重试失败"); return; }
       await loadJobs();
-    } catch { setError("重试请求失败，请稍后再试。"); }
+    } catch (error) { setError(error instanceof SessionExpiredError ? error.message : "重试请求失败，请稍后再试。"); }
     finally { setRetryingJobId(null); }
   }
   async function updatePoint(point: KnowledgePoint, content: string) {
@@ -609,7 +751,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
   if (!user) return <AuthScreen />;
   if (isAdmin === null) return <div className="center-screen" role="status">正在确认账户权限…</div>;
 
-  return <div className={`shell ${navCollapsed ? "shell-nav-collapsed" : ""} ${view === "reader" ? "shell-reading" : ""} ${readingNavOpen ? "shell-reading-nav-open" : ""} ${focus ? "shell-focus" : ""} ${mobileNavOpen ? "mobile-nav-open" : ""}`}>
+  return <div className={`shell shell-view-${view} ${navCollapsed ? "shell-nav-collapsed" : ""} ${view === "reader" ? "shell-reading" : ""} ${readingNavOpen ? "shell-reading-nav-open" : ""} ${focus ? "shell-focus" : ""} ${mobileNavOpen ? "mobile-nav-open" : ""}`}>
     {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="关闭导航" onClick={() => setMobileNavOpen(false)} />}
     <aside className="app-sidebar"><button className="nav-collapse" onClick={() => setNavCollapsed(value => !value)} aria-label={navCollapsed || focus ? "展开主导航" : "折叠主导航"} title={navCollapsed || focus ? "展开主导航" : "折叠主导航"}>{navCollapsed || focus ? "»" : "«"}</button>
       <button className="brand" onClick={() => navigate("home")}><span className="brand-mark">IM</span><span>Interview<br /><strong>Master</strong></span></button>
@@ -629,6 +771,7 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
       <div className="mobile-bar"><button className="mobile-menu-button" aria-label="打开导航" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}>☰</button><button className="brand" onClick={() => navigate("home")}><span className="brand-mark">IM</span><strong>Interview Master</strong></button></div>
       {view !== "reader" && <header className="workspace-topbar"><label className="workspace-search"><span aria-hidden="true">⌕</span><input aria-label="全局搜索专题和知识点" placeholder="搜索专题和知识点" value={query} onFocus={() => { if (view !== "library") navigate("library"); }} onChange={event => setQuery(event.target.value)} /></label><div className="topbar-end">{isAdmin && <button className="task-entry" onClick={() => setTaskDrawerOpen(true)}>生成任务{jobs.some(job => job.status === "pending" || job.status === "running") && <span>{jobs.filter(job => job.status === "pending" || job.status === "running").length} 进行中</span>}{!jobs.some(job => job.status === "pending" || job.status === "running") && jobs.some(job => job.status === "failed") && <span className="has-failure">有失败任务</span>}</button>}<span className="workspace-account">{user.email?.split("@")[0]}</span></div></header>}
       {error && <div role="alert" className="error-banner">{error}<button onClick={() => setError("")}>关闭</button></div>}
+      {view === "home" && <MobileHome recommendation={publishedTopics.find(topic => topic.id === recommendations[0]?.topic_id) || publishedTopics[0] || null} continueTopic={publishedTopics.find(topic => topic.id === lastTopicId) || null} continuePoint={lastPointId} savedCount={offlineTopics.length} offline={offline} loading={topicsLoad === "loading"} onRead={id => openTopic(id)} onCards={() => navigate("browse")} onContinue={() => { if (lastTopicId) openTopic(lastTopicId); }} />}
       {view === "home" && <section className="page-wrap home-page">
         <div className="home-topline"><span>学习工作台</span><span>{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(new Date())}</span></div>
         <h1 className="hero-title">今天想看点什么？</h1>
@@ -646,17 +789,18 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
           {publishedTopics.length ? <div className="recent-list">{publishedTopics.slice(0, 4).map(topic => <TopicTile key={topic.id} topic={topic} category={categoryName(topic.category_id)} onOpen={() => openTopic(topic.id)} />)}</div> : <div className="empty">发布的专题会出现在这里。</div>}
         </div>{isAdmin && <aside className="home-aside"><h2>今日待处理</h2><p>从待审核内容继续整理，再回到知识库阅读。</p><button onClick={() => navigate("drafts")}><strong>{draftTopics.length}</strong><span>份待检查草稿</span><b>查看草稿 →</b></button><button onClick={() => setTaskDrawerOpen(true)}><strong>{jobs.filter(job => job.status === "pending" || job.status === "running").length}</strong><span>项生成任务</span><b>查看任务 →</b></button><button className="aside-create" onClick={() => navigate("create")}>＋ 创建知识专题</button></aside>}</div>
       </section>}
-      {view === "library" && <LibraryPanel topics={publishedTopics} drafts={draftTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} searchPoints={searchPoints} query={query} categoryName={categoryName} canManage={isAdmin === true} userId={user.id} onCategoriesChanged={load} />}
+      {view === "library" && <LibraryPanel topics={publishedTopics} drafts={draftTopics} categories={categories} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} searchPoints={searchPoints} query={query} categoryName={categoryName} canManage={isAdmin === true} userId={user.id} onCategoriesChanged={load} onOpen={id => openTopic(id)} />}
       {view === "favorites" && <FavoritesPanel points={searchPoints} activities={pointActivity} topics={topics} categories={categories} status={insightsStatus === "error" || topicsLoad === "error" ? "error" : insightsStatus === "loaded" && topicsLoad === "loaded" ? "loaded" : "loading"} categoryName={categoryName} onOpen={openTopic} onRemove={id => setPointControl(id, "unfavorite")} onBrowse={() => navigate("library")} />}
       {view === "notes" && <NotesPanel userId={user.id} topics={topics} categoryName={categoryName} onOpen={(topicId, chapterId) => openTopic(topicId, undefined, chapterId)} />}
-      {view === "browse" && (insightsStatus === "loaded" && recommendationPreferencesReady ? <CasualCards userId={user.id} points={preferredRecommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} onSeen={onCardSeen} onControl={setPointControl} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
+      {view === "browse" && (insightsStatus === "loaded" && recommendationPreferencesReady ? <CasualCards userId={user.id} points={preferredRecommendationPool} activities={pointActivity} topics={publishedTopics} categories={categories} offline={offline} onSeen={onCardSeen} onControl={setPointControl} onExit={() => navigate("home")} onOpenTopic={id => openTopic(id)} /> : <div className="page-wrap empty" role="status">{insightsStatus === "error" ? "知识卡片暂时无法加载，请刷新页面重试。" : "正在准备知识卡片…"}</div>)}
+      {view === "profile" && <section className="mobile-profile"><span className="mobile-home-kicker">我的</span><h1>我的阅读</h1><p>{user.email || "离线阅读"}</p><div className="mobile-section-title"><h2>离线专题</h2><span>{offlineTopics.length} 篇</span></div>{offlineTopics.length ? <div className="mobile-saved-list">{offlineTopics.map(item => <button key={item.key} onClick={() => openTopic(item.topic.id)}><strong>{item.topic.title}</strong><small>已保存 · 离线可读</small></button>)}</div> : <p className="mobile-empty">打开专题后，点“存离线”即可在没网时阅读。</p>}<p className="mobile-install-hint">想从 iPhone 主屏幕打开？在 Safari 点“分享”，再选“添加到主屏幕”。</p><button className="mobile-signout" onClick={() => { window.localStorage.removeItem("im:offline-identity"); authUserIdRef.current = null; setUser(null); setOfflineTopics([]); setTopics([]); void db?.auth.signOut({ scope: "local" }); }}>退出登录</button></section>}
       {view === "drafts" && isAdmin && <DraftPanel topics={draftTopics} insights={topicInsights} insightsStatus={insightsStatus} topicsStatus={topicsLoad} categoryName={categoryName} onOpen={openTopic} onCreate={() => navigate("create")} onDelete={topic => void deleteDraft(topic)} />}
       {view === "create" && isAdmin && <CreatePanel busy={busy} onGenerate={generate} onManual={createManual} />}
-      {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
+      {view === "reader" && focus && selected && mode === "read" && pointsLoad.topicId === selectedId && pointsLoad.status === "loaded" && <FocusReader topic={selected} category={categoryName(selected.category_id)} sections={sections} points={points} notes={notes} userId={user.id} initialPointId={activePointId?.startsWith("point-") ? activePointId.slice(6) : null} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} savedOffline={offlineTopics.some(item => item.topic.id === selected.id)} onToggleOffline={() => void toggleOfflineTopic()} backLabel={effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"} onBack={() => navigate(effectiveReaderReturnView)} onExit={pointId => { setFocus(false); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "auto", block: "start" })); }} />}
       {view === "reader" && focus && selected && pointsLoad.status !== "loaded" && (pointsLoad.status === "error" ? <div className="reader-load-error">专题内容加载失败。<button className="text-btn" onClick={() => setFocus(false)}>返回专题页</button></div> : <ReaderLoading full />)}
       {view === "reader" && !focus && <section className={`reader ${focus ? "reader-focus" : ""} ${topicsHidden ? "reader-topics-hidden" : ""} ${mobileTopicsOpen ? "reader-mobile-topics-open" : ""}`}><aside className="reader-left"><button className="back-link" onClick={() => navigate(effectiveReaderReturnView)}>← 返回{effectiveReaderReturnView === "favorites" ? "我的收藏" : effectiveReaderReturnView === "drafts" ? "草稿箱" : "知识库"}</button><h3>专题列表</h3>{(selected?.status === "draft" ? draftTopics : publishedTopics).map(topic => <button key={topic.id} className={`reader-topic ${topic.id === selectedId ? "selected" : ""}`} onClick={() => { openTopic(topic.id); setMobileTopicsOpen(false); }}>{topic.title}</button>)}</aside><div className="reader-body">{selected ? <><div className="reader-toolbar"><span>{categoryName(selected.category_id)} / 专题阅读</span><div className="reader-toolbar-actions"><button className="reader-nav-toggle" onClick={() => setReadingNavOpen(value => !value)} aria-expanded={readingNavOpen}>{readingNavOpen ? "隐藏导航" : "显示导航"}</button><button className="reader-topic-toggle" onClick={() => setTopicsHidden(value => !value)}>{topicsHidden ? "显示专题列表" : "隐藏专题列表"}</button><button disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded"} onClick={() => { setMode("read"); setFocus(true); }}>专注阅读</button><button className="topics-mobile-toggle" onClick={() => setMobileTopicsOpen(value => !value)} aria-expanded={mobileTopicsOpen}>专题列表</button><button className="toc-mobile-toggle" onClick={() => setTocOpen(value => !value)} aria-expanded={tocOpen}>本章目录</button><button className="reader-top-toggle" onClick={() => window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" })}>↑ 回到顶部</button></div></div><div className="reader-heading"><h1>{selected.title}</h1><TopicAnswerFocus answer={readTopicAnswer(sections[0]?.content_md)} /><p>{selected.summary || "开始整理这份专题，为知识点添加自己的理解。"}</p><div className="reader-actions"><button className={mode === "read" ? "tab active" : "tab"} onClick={() => setMode("read")}>完整阅读</button><button className={mode === "cards" ? "tab active" : "tab"} disabled={pointsLoad.topicId !== selectedId || pointsLoad.status !== "loaded" || cards.length === 0 || !reviewsReady} onClick={() => { setMode("cards"); window.scrollTo({ top: 0, behavior: "instant" }); }}>认真复习</button>{isAdmin && selected.status === "published" && <button className="regenerate-reader-btn" disabled={regeneratingTopicId === selected.id || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void regeneratePublishedTopic(selected)}>{regeneratingTopicId === selected.id ? "提交中…" : "按当前名称重新生成"}</button>}{isAdmin && selected.status === "draft" && <button className="publish-btn" onClick={publish}>发布到知识库</button>}{isAdmin && selected.status === "draft" && <button className="delete-reader-btn" disabled={jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))} onClick={() => void deleteDraft(selected)}>删除草稿</button>}</div></div>{mode === "read" ? <div className="article">{pointsLoad.topicId !== selectedId || pointsLoad.status === "loading" ? <ReaderLoading /> : pointsLoad.status === "error" ? <div className="reader-load-error">知识点加载失败，请稍后重试或重新打开专题。</div> : sections.length ? sections.map(section => <section key={section.id} id={`section-${section.id}`}><h2>{section.title}</h2>{points.filter(point => point.parent_id === section.id).map(point => <PointBlock key={point.id} point={point} activity={pointActivity[point.id]} canEdit={isAdmin} mastery={mastery[point.id] || 0} onSave={updatePoint} onVerify={verifyPoint} onControl={setPointControl} />)}<ChapterNote section={section} note={notes[section.id] || ""} onSave={saveNote} /></section>) : ((!jobsLoaded && (selected.generation_status === "pending" || selected.generation_status === "running")) || jobs.some(job => job.topic_id === selected.id && (job.status === "pending" || job.status === "running"))) ? <div className="reader-waiting" role="status"><span className="reader-waiting-dot" />正在生成专题内容，完成后会自动显示在这里。</div> : <div className="empty">这个专题还没有知识点。可以先创建内容，生成任务完成后也会自动显示在这里。</div>}</div> : !reviewsReady ? <ReaderLoading /> : <CardReview topic={selected} category={categoryName(selected.category_id)} sections={sections} points={cards} notes={notes} progress={reviewProgress} preferences={readerPreferences} onPreferencesChange={changeReaderPreferences} onSaveNote={saveNote} onRate={rateCard} onUndo={undoCardRating} onExit={pointId => { setMode("read"); if (pointId) requestAnimationFrame(() => document.getElementById(`point-${pointId}`)?.scrollIntoView({ behavior: "instant", block: "start" })); else window.scrollTo({ top: 0, behavior: "instant" }); }} />}</> : topicsLoad === "loading" ? <ReaderLoading full /> : topicsLoad === "error" ? <div className="reader-load-error">专题加载失败，请稍后重试。</div> : <div className="empty">找不到这个专题，或你没有访问权限。</div>}</div><aside className={`reader-right ${tocOpen ? "toc-open" : ""}`} aria-label="本章目录"><h3>本章目录</h3>{sections.map(section => <div className="toc-section" key={section.id}><div className="toc-section-head"><a className={activePointId === `section-${section.id}` || points.some(point => point.parent_id === section.id && activePointId === `point-${point.id}`) ? "active" : ""} href={`#section-${section.id}`} onClick={event => jumpToTocTarget(event, `section-${section.id}`)}>{section.title}</a><button onClick={() => setClosedSections(previous => previous.includes(section.id) ? previous.filter(id => id !== section.id) : [...previous, section.id])} aria-label={`${closedSections.includes(section.id) ? "展开" : "折叠"}${section.title}`} aria-expanded={!closedSections.includes(section.id)}>{closedSections.includes(section.id) ? "+" : "−"}</button></div>{!closedSections.includes(section.id) && points.filter(point => point.parent_id === section.id).map(point => <a className={`toc-point ${activePointId === `point-${point.id}` ? "active" : ""} ${mastery[point.id] >= 3 ? "mastered" : mastery[point.id] > 0 ? "weak" : ""}`} key={point.id} href={`#point-${point.id}`} onClick={event => jumpToTocTarget(event, `point-${point.id}`)}><span>{point.title}</span>{mastery[point.id] > 0 && <i aria-label={mastery[point.id] >= 3 ? "已掌握" : "薄弱知识点"} />}</a>)}</div>)}<div className="reader-note">AI 内容仅作为初稿。请核对技术细节和适用版本，再用于面试准备。</div></aside></section>}
-      {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
-    </main><nav className="mobile-nav" aria-label="手机导航"><button onClick={() => navigate("home")}>首页</button><button onClick={() => navigate("browse")}>随便看看</button><button onClick={() => navigate("library")}>知识库</button><button onClick={() => navigate("favorites")}>收藏</button>{isAdmin && <button onClick={() => navigate("drafts")}>草稿</button>}{isAdmin && <button onClick={() => navigate("create")}>创建专题</button>}</nav>
+      {view === "reader" && mode === "read" && pointsLoad.status === "loaded" && !offline && <ReadingActivityTracker key={`${selectedId}:${focus}`} onViewed={onPointViewed} />}
+    </main><nav className="mobile-nav" aria-label="手机导航"><button className={view === "home" ? "active" : ""} onClick={() => navigate("home")}><span aria-hidden="true">⌂</span>首页</button><button className={view === "library" ? "active" : ""} onClick={() => navigate("library")}><span aria-hidden="true">▤</span>知识库</button><button className={view === "browse" ? "active" : ""} onClick={() => navigate("browse")}><span aria-hidden="true">▧</span>卡片</button><button className={view === "profile" ? "active" : ""} onClick={() => navigate("profile")}><span aria-hidden="true">◉</span>我的</button></nav>
     {isAdmin && taskDrawerOpen && <TaskDrawer jobs={jobs} onClose={() => setTaskDrawerOpen(false)} onOpen={id => { setTaskDrawerOpen(false); openTopic(id); }} onRetry={retryJob} onDelete={id => { const topic = topics.find(item => item.id === id); if (topic) void deleteDraft(topic); }} retryingJobId={retryingJobId} />}
   </div>;
 }
@@ -747,7 +891,7 @@ function RecommendationSection({ points, activities, topics, categories, categor
   </section>;
 }
 
-function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, topicsStatus, searchPoints, query, categoryName, canManage, userId, onCategoriesChanged }: { topics: Topic[]; drafts: Topic[]; categories: Category[]; insights: Record<string, TopicInsight>; insightsStatus: "loading" | "loaded" | "error"; topicsStatus: "loading" | "loaded" | "error"; searchPoints: SearchPoint[]; query: string; categoryName: (id: string | null) => string; canManage: boolean; userId: string; onCategoriesChanged: () => Promise<void> }) {
+function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, topicsStatus, searchPoints, query, categoryName, canManage, userId, onCategoriesChanged, onOpen }: { topics: Topic[]; drafts: Topic[]; categories: Category[]; insights: Record<string, TopicInsight>; insightsStatus: "loading" | "loaded" | "error"; topicsStatus: "loading" | "loaded" | "error"; searchPoints: SearchPoint[]; query: string; categoryName: (id: string | null) => string; canManage: boolean; userId: string; onCategoriesChanged: () => Promise<void>; onOpen: (id: string) => void }) {
   const [currentTime, setCurrentTime] = useState(0);
   useEffect(() => { queueMicrotask(() => setCurrentTime(Date.now())); }, []);
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -791,11 +935,17 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
     const topic = chooseRandomTopic(visible, lastRandomTopicId);
     if (!topic) return;
     setLastRandomTopicId(topic.id);
-    window.open(`/knowledge/${topic.id}`, "_blank", "noopener,noreferrer");
+    if (window.matchMedia("(max-width: 760px)").matches) onOpen(topic.id);
+    else window.open(`/knowledge/${topic.id}`, "_blank", "noopener,noreferrer");
   }
   const totalPoints = topics.reduce((sum, topic) => sum + (insights[topic.id]?.pointCount || 0), 0);
   const viewedPoints = topics.reduce((sum, topic) => sum + (insights[topic.id]?.viewedCount || 0), 0);
-  return <section className="page-wrap management-page library-page"><div className="management-heading"><div><span className="eyebrow">知识资产</span><h1 className="page-title">我的知识库</h1><p>选择专题，在新标签页阅读；这里会保留筛选结果。</p></div><span className="management-count">{topics.length} 个专题</span></div>
+  function readOnMobile(event: React.MouseEvent<HTMLAnchorElement>, id: string) {
+    if (!window.matchMedia("(max-width: 760px)").matches) return;
+    event.preventDefault();
+    onOpen(id);
+  }
+  return <section className="page-wrap management-page library-page"><div className="management-heading"><div><span className="eyebrow">知识资产</span><h1 className="page-title">我的知识库</h1><p>选择专题，接着阅读。</p></div><span className="management-count">{topics.length} 个专题</span></div>
     {topicsStatus === "loaded" && insightsStatus === "loaded" && (topics.length >= 2 || totalPoints >= 10) && <div className="library-overview"><div><strong>{topics.length}</strong><span>全部专题</span></div><div><strong>{totalPoints}</strong><span>知识点</span></div><div><strong>{viewedPoints}/{totalPoints}</strong><span>已浏览知识点</span></div></div>}
     <div className="library-categories"><div className="library-categories-heading"><strong>专题分类</strong>{canManage && <button type="button" onClick={() => setCategoriesOpen(value => !value)} aria-expanded={categoriesOpen}>管理分类</button>}</div><div className="library-category-tabs" role="group" aria-label="按专题分类筛选"><button type="button" className={categoryFilter === "all" ? "active" : ""} aria-pressed={categoryFilter === "all"} onClick={() => setCategoryFilter("all")}>全部 <span>{topics.length}</span></button>{availableCategories.map(category => <button type="button" key={category.id} className={categoryFilter === category.id ? "active" : ""} aria-pressed={categoryFilter === category.id} onClick={() => setCategoryFilter(category.id)}>{categoryName(category.id)} <span>{categoryCounts.get(category.id)}</span></button>)}{categoryCounts.has("uncategorized") && <button type="button" className={categoryFilter === "uncategorized" ? "active" : ""} aria-pressed={categoryFilter === "uncategorized"} onClick={() => setCategoryFilter("uncategorized")}>未分类 <span>{categoryCounts.get("uncategorized")}</span></button>}</div></div>
     {insightsStatus === "loaded" && <section className="category-coverage" aria-label="分类阅读覆盖率"><h2>分类阅读覆盖率</h2><div className="category-coverage-grid">{[...availableCategories.map(category => ({ id: category.id, name: categoryName(category.id) })), ...(categoryCounts.has("uncategorized") ? [{ id: "uncategorized", name: "未分类" }] : [])].map(category => { const value = coverage[category.id] || { total: 0, viewed: 0 }; const percent = value.total ? Math.round(value.viewed / value.total * 100) : 0; return <div className="category-coverage-item" key={category.id}><div><strong>{category.name}</strong><span>{value.viewed}/{value.total} · {percent}%</span></div><div className="progress-track" role="progressbar" aria-label={`${category.name}阅读覆盖率`} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div></div>; })}</div></section>}
@@ -804,7 +954,7 @@ function LibraryPanel({ topics, drafts, categories, insights, insightsStatus, to
     {topicsStatus !== "loaded" || insightsStatus !== "loaded" ? <div className="management-empty" role="status">{topicsStatus === "error" || insightsStatus === "error" ? "专题或学习信息暂时无法加载，请刷新页面重试。" : "正在加载专题与学习信息…"}</div> : visible.length ? <div className={`library-list ${layout === "grid" ? "is-grid" : ""}`}>{visible.map(topic => {
       const insight = insights[topic.id] || noInsight;
       const percentage = insight.pointCount ? Math.round(insight.viewedCount / insight.pointCount * 100) : 0;
-      return <article className="library-row" key={topic.id}><div className="library-row-content"><span className="category-tag">{categoryName(topic.category_id)}</span><h2><a href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer">{topic.title}</a></h2>{topic.summary && <p>{topic.summary}</p>}<div className="library-row-meta"><span>{insight.pointCount} 个知识点</span><span>{studyDate(insight.lastViewedAt)}</span></div></div><div className="library-row-progress"><strong>{insight.viewedCount}/{insight.pointCount}</strong><span>已浏览</span><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div></div><a className="library-row-action" href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer">新标签页阅读</a></article>;
+      return <article className="library-row" key={topic.id}><div className="library-row-content"><span className="category-tag">{categoryName(topic.category_id)}</span><h2><a href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer" onClick={event => readOnMobile(event, topic.id)}>{topic.title}</a></h2>{topic.summary && <p>{topic.summary}</p>}<div className="library-row-meta"><span>{insight.pointCount} 个知识点</span><span>{studyDate(insight.lastViewedAt)}</span></div></div><div className="library-row-progress"><strong>{insight.viewedCount}/{insight.pointCount}</strong><span>已浏览</span><div className="progress-track"><i style={{ width: `${percentage}%` }} /></div></div><a className="library-row-action" href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer" onClick={event => readOnMobile(event, topic.id)}><span className="library-read-desktop">新标签页阅读</span><span className="library-read-mobile">开始阅读</span></a></article>;
     })}</div> : <div className="management-empty">{topics.length ? "没有符合筛选条件的已发布专题。" : "知识库还没有专题。生成并发布第一份内容后，会在这里开始积累。"}</div>}
     {matchingDrafts.length > 0 && <div className="global-draft-results"><h2>草稿中的结果</h2>{matchingDrafts.map(topic => <a key={topic.id} href={`/knowledge/${topic.id}`} target="_blank" rel="noopener noreferrer"><span className="category-tag">{categoryName(topic.category_id)}</span><strong>{topic.title}</strong><span>新标签页完善</span></a>)}</div>}
   </section>;
