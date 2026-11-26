@@ -1,11 +1,17 @@
 .mobile-home,.mobile-profile{display:none}
 .library-read-mobile{display:none}
+.mobile-sidebar-close,.focus-menu{display:none}
 @media(min-width:761px){.mobile-profile{display:block;max-width:650px;margin:auto;padding:70px 30px}.mobile-profile h1{font-size:32px;color:#18312d}.mobile-profile .mobile-section-title{display:flex;justify-content:space-between;margin:35px 0 15px}.mobile-saved-list{display:grid;gap:10px}.mobile-saved-list button{display:grid;gap:5px;text-align:left;padding:16px;border:1px solid #dce6df;border-radius:10px;background:#fff}.mobile-signout{margin-top:30px;border:0;background:none;color:#9b4e43}}
 
 @media(max-width:760px){
   .main-area{background:#f7f9f6}
   .mobile-bar{position:sticky;top:0;z-index:18;height:calc(58px + env(safe-area-inset-top));padding:calc(8px + env(safe-area-inset-top)) 22px 8px;background:#f7f9f6;border-bottom:1px solid #e2e9e3}
-  .mobile-bar .mobile-menu-button{display:none}
+  .mobile-bar .mobile-menu-button{display:inline-flex;align-items:center;justify-content:center;flex:none;width:42px;height:42px;margin-left:-7px;border-radius:9px;color:#1d6c56;font-size:21px}
+  .mobile-bar .mobile-menu-button:focus-visible,.focus-menu:focus-visible,.mobile-sidebar-close:focus-visible{outline:2px solid #1d6c56;outline-offset:2px}
+  .shell .app-sidebar{overflow-y:auto;overscroll-behavior:contain;padding-top:max(24px,env(safe-area-inset-top));padding-bottom:max(20px,env(safe-area-inset-bottom))}
+  .shell.mobile-nav-open .app-sidebar,.shell.shell-focus.mobile-nav-open .app-sidebar{display:flex!important;transform:translateX(0)}
+  .shell .app-sidebar .nav-collapse{display:none}
+  .mobile-sidebar-close{display:grid;place-items:center;align-self:flex-end;width:40px;height:40px;margin:-9px 0 4px;border:0;border-radius:9px;background:#eef4ef;color:#1d6c56;font-size:28px;line-height:1}
   .mobile-bar .brand{display:flex;align-items:center;gap:9px}
   .mobile-bar .brand-mark{width:32px;height:32px;border-radius:8px;font-size:12px}
   .mobile-bar .brand strong{font-size:15px;letter-spacing:-.3px}
@@ -63,6 +69,7 @@
   .casual-actions button{color:#1d6c56}
   .focus-reader{min-height:100dvh}
   .focus-header-inner{height:calc(58px + env(safe-area-inset-top));padding:env(safe-area-inset-top) 18px 0}
+  .focus-menu{display:inline-flex;align-items:center;justify-content:center;width:36px;height:38px;color:#1d6c56!important;font-size:19px!important}
   .focus-drawer-backdrop,.focus-toc{top:calc(58px + env(safe-area-inset-top))}
   .focus-settings{top:calc(64px + env(safe-area-inset-top))}
   .focus-tools{gap:1px}
