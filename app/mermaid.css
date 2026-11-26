@@ -1,0 +1,46 @@
+.markdown .mermaid-diagram {
+  width: 100%;
+  margin: 28px 0;
+  padding: 24px;
+  overflow-x: auto;
+  border: 1px solid #dce6f4;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.markdown .mermaid-svg {
+  display: flex;
+  justify-content: center;
+  min-width: min-content;
+}
+
+.markdown .mermaid-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown .mermaid-loading,
+.markdown .mermaid-fallback > p {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.markdown .mermaid-diagram details {
+  margin-top: 16px;
+  color: #526b8e;
+  font-size: 13px;
+}
+
+.markdown .mermaid-diagram summary {
+  cursor: pointer;
+}
+
+.markdown .mermaid-diagram pre,
+.markdown .mermaid-fallback pre {
+  margin-top: 12px;
+  white-space: pre;
+}
+
+@media (max-width: 760px) {
+  .markdown .mermaid-diagram { padding: 16px; }
+}

@@ -7,17 +7,23 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import { normalizeMarkdown } from "@/lib/markdown";
+import { MermaidDiagram } from "@/components/mermaid-diagram";
+
+function extractText(node: React.ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (isValidElement<{ children?: React.ReactNode }>(node)) return extractText(node.props.children);
+  return "";
+}
 
 function CodeBlock({ children }: { children?: React.ReactNode }) {
   const codeRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const language = isValidElement<{ className?: string }>(children) ? children.props.className?.match(/language-([\w+#-]+)/)?.[1] : undefined;
-  function extractText(node: React.ReactNode): string {
-    if (typeof node === "string" || typeof node === "number") return String(node);
-    if (Array.isArray(node)) return node.map(extractText).join("");
-    if (isValidElement<{ children?: React.ReactNode }>(node)) return extractText(node.props.children);
-    return "";
+  if (language?.toLowerCase() === "mermaid") {
+    const source = extractText(children).trim();
+    return <MermaidDiagram key={source} source={source} />;
   }
   const foldable = extractText(children).split("\n").length > 12;
   async function copy() {
