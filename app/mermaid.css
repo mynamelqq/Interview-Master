@@ -1,22 +1,42 @@
 .markdown .mermaid-diagram {
   width: 100%;
-  margin: 28px 0;
-  padding: 24px;
-  overflow-x: auto;
-  border: 1px solid #dce6f4;
+  margin: 30px 0;
+  padding: 28px 24px 12px;
+  border: 0;
   border-radius: 12px;
-  background: #fbfdff;
+  background: #f6f8fc;
+}
+
+.markdown .mermaid-viewport {
+  overflow-x: auto;
+  padding: 8px 0 20px;
 }
 
 .markdown .mermaid-svg {
   display: flex;
   justify-content: center;
-  min-width: min-content;
+  width: max-content;
+  min-width: 100%;
 }
 
 .markdown .mermaid-svg svg {
-  max-width: 100%;
+  max-width: none !important;
+  flex: none;
   height: auto;
+}
+
+.markdown .mermaid-svg .nodeLabel p { margin: 0; line-height: 1.5; }
+
+.markdown .mermaid-svg svg .node rect {
+  rx: 10px;
+  ry: 10px;
+  filter: none !important;
+}
+
+.markdown .mermaid-svg svg .node polygon,
+.markdown .mermaid-svg svg .node circle,
+.markdown .mermaid-svg svg .node ellipse {
+  filter: none !important;
 }
 
 .markdown .mermaid-loading,
@@ -26,13 +46,21 @@
 }
 
 .markdown .mermaid-diagram details {
-  margin-top: 16px;
-  color: #526b8e;
-  font-size: 13px;
+  margin-top: 0;
+  padding-top: 8px;
+  border-top: 1px solid #e5eaf2;
+  color: #65768d;
+  font-size: 12px;
 }
 
 .markdown .mermaid-diagram summary {
   cursor: pointer;
+  width: fit-content;
+  padding: 3px 0;
+}
+
+.markdown .mermaid-diagram summary:hover {
+  color: #286bd4;
 }
 
 .markdown .mermaid-diagram pre,
@@ -42,5 +70,5 @@
 }
 
 @media (max-width: 760px) {
-  .markdown .mermaid-diagram { padding: 16px; }
+  .markdown .mermaid-diagram { padding: 16px 14px 12px; }
 }

@@ -20,13 +20,25 @@ export function MermaidDiagram({ source }: { source: string }) {
             startOnLoad: false,
             securityLevel: "strict",
             theme: "base",
+            look: "classic",
+            flowchart: {
+              useMaxWidth: false,
+              nodeSpacing: 28,
+              rankSpacing: 36,
+              padding: 16,
+              wrappingWidth: 240,
+              curve: "monotoneX",
+            },
             themeVariables: {
-              primaryColor: "#edf4ff",
-              primaryBorderColor: "#8eb5ec",
-              primaryTextColor: "#202938",
-              lineColor: "#667b99",
-              secondaryColor: "#f6f8fc",
+              background: "#ffffff",
+              primaryColor: "#f4f8ff",
+              primaryBorderColor: "#a9c4e8",
+              primaryTextColor: "#263b57",
+              lineColor: "#6788b4",
+              secondaryColor: "#edf4ff",
               tertiaryColor: "#ffffff",
+              edgeLabelBackground: "#ffffff",
+              fontSize: "16px",
               fontFamily: 'Inter, "PingFang SC", "Microsoft YaHei", sans-serif',
             },
           });
@@ -45,7 +57,7 @@ export function MermaidDiagram({ source }: { source: string }) {
 
   if (!source || failed || source.length > 12000) return <div className="mermaid-fallback"><p>图表暂时无法显示，以下是原始内容：</p><pre><code>{source}</code></pre></div>;
   return <figure className="mermaid-diagram" aria-label="知识图表">
-    {svg ? <div className="mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} /> : <div className="mermaid-loading" role="status">正在绘制图表…</div>}
+    {svg ? <div className="mermaid-viewport"><div className="mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} /></div> : <div className="mermaid-loading" role="status">正在绘制图表…</div>}
     {svg && <details><summary>查看图表源码</summary><pre><code>{source}</code></pre></details>}
   </figure>;
 }

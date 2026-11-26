@@ -1,5 +1,5 @@
 const SHELL_CACHE = "im-shell-v1";
-const STATIC_CACHE = "im-static-v1";
+const STATIC_CACHE = "im-static-v2";
 const SHELL_FILES = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", event => {
@@ -26,11 +26,15 @@ self.addEventListener("fetch", event => {
 
   if (url.pathname.startsWith("/_next/static/") || SHELL_FILES.includes(url.pathname)) {
     event.respondWith(caches.open(STATIC_CACHE).then(async cache => {
-      const cached = await cache.match(request);
-      if (cached) return cached;
-      const response = await fetch(request);
-      if (response.ok) await cache.put(request, response.clone());
-      return response;
+      try {
+        const response = await fetch(request);
+        if (response.ok) await cache.put(request, response.clone());
+        return response;
+      } catch (error) {
+        const cached = await cache.match(request);
+        if (cached) return cached;
+        throw error;
+      }
     }));
   }
 });
