@@ -798,21 +798,22 @@ export function Workspace({ initialTopicId }: { initialTopicId?: string }) {
     if (saveError) { setError(saveError.message); return; }
     await load(); openTopic(data.id);
   }
-  async function generate(titles: string[]): Promise<{ createdCount: number; failedTitles: string[] } | null> {
+  async function generate(titles: string[]): Promise<{ createdCount: number; skippedTitles: string[]; failedTitles: string[] } | null> {
     if (!db || isAdmin !== true) return null;
     setBusy(true); setError("");
     try {
       const response = await postGenerationRequest(db, "/api/topics/generate", { titles, groupId: selectedModelGroupId });
-      const result: { error?: string; created?: { title: string }[]; failed?: { title: string; error: string; jobId?: string }[] } = await response.json();
+      const result: { error?: string; created?: { title: string }[]; skipped?: { title: string; reason: string }[]; failed?: { title: string; error: string }[] } = await response.json();
       const created = result.created || [];
+      const skipped = result.skipped || [];
       const failed = result.failed || [];
-      if (created.length || failed.some(item => item.jobId)) void loadJobs().catch(() => setError("任务已提交，但任务列表刷新失败，请稍后再查看。"));
+      if (created.length) void loadJobs().catch(() => setError("任务已提交，但任务列表刷新失败，请稍后再查看。"));
       if (failed.length) {
         setError(`已创建 ${created.length} 个任务，${failed.length} 个失败：${failed.map(item => `${item.title}（${item.error}）`).join("；")}`);
-        return { createdCount: created.length, failedTitles: failed.map(item => item.title) };
+        return { createdCount: created.length, skippedTitles: skipped.map(item => item.title), failedTitles: failed.map(item => item.title) };
       }
-      if (!response.ok || !created.length) { setError(result.error || "创建任务失败"); return null; }
-      return { createdCount: created.length, failedTitles: [] };
+      if (!response.ok || (!created.length && !skipped.length)) { setError(result.error || "创建任务失败"); return null; }
+      return { createdCount: created.length, skippedTitles: skipped.map(item => item.title), failedTitles: [] };
     } catch (error) { setError(error instanceof SessionExpiredError ? error.message : "网络请求失败，请重试。"); return null; }
     finally { setBusy(false); }
   }
@@ -1290,11 +1291,11 @@ function TopicTile({ topic, category, onOpen }: { topic: Topic; category: string
   return <button className="topic-tile" onClick={onOpen}><span className="topic-category">{category}</span><strong>{topic.title}</strong><span className="topic-meta">{new Date(topic.created_at).toLocaleDateString("zh-CN")}</span><span className="tile-arrow">↗</span></button>;
 }
 
-function CreatePanel({ busy, groups, groupsStatus, selectedGroupId, onSelectGroup, onSaveGroup, onGenerate, onManual, onViewTasks }: { busy: boolean; groups: AiModelGroup[]; groupsStatus: "loading" | "loaded" | "error"; selectedGroupId: string; onSelectGroup: (id: string) => void; onSaveGroup: (draft: ModelGroupDraft) => Promise<{ group?: AiModelGroup; error?: string }>; onGenerate: (titles: string[]) => Promise<{ createdCount: number; failedTitles: string[] } | null>; onManual: (title: string) => void; onViewTasks: () => void }) {
+function CreatePanel({ busy, groups, groupsStatus, selectedGroupId, onSelectGroup, onSaveGroup, onGenerate, onManual, onViewTasks }: { busy: boolean; groups: AiModelGroup[]; groupsStatus: "loading" | "loaded" | "error"; selectedGroupId: string; onSelectGroup: (id: string) => void; onSaveGroup: (draft: ModelGroupDraft) => Promise<{ group?: AiModelGroup; error?: string }>; onGenerate: (titles: string[]) => Promise<{ createdCount: number; skippedTitles: string[]; failedTitles: string[] } | null>; onManual: (title: string) => void; onViewTasks: () => void }) {
   const [input, setInput] = useState("");
   const [fileError, setFileError] = useState("");
   const [readingFile, setReadingFile] = useState(false);
-  const [submission, setSubmission] = useState<{ createdCount: number; failedCount: number } | null>(null);
+  const [submission, setSubmission] = useState<{ createdCount: number; skippedTitles: string[] } | null>(null);
   const titles = [...new Set(input.split(/[;；]/).map(title => title.trim()).filter(Boolean))];
   const invalidTitle = titles.find(title => title.length > 120);
   const canSubmit = titles.length > 0 && titles.length <= 100 && !invalidTitle && !readingFile && !busy && groupsStatus === "loaded" && !!selectedGroupId;
@@ -1306,7 +1307,7 @@ function CreatePanel({ busy, groups, groupsStatus, selectedGroupId, onSelectGrou
     const result = await onGenerate(titles);
     if (!result) return;
     setInput(result.failedTitles.join(";"));
-    if (result.createdCount > 0) setSubmission({ createdCount: result.createdCount, failedCount: result.failedTitles.length });
+    setSubmission({ createdCount: result.createdCount, skippedTitles: result.skippedTitles });
   }
 
   async function importFile(file?: File) {
@@ -1324,7 +1325,7 @@ function CreatePanel({ busy, groups, groupsStatus, selectedGroupId, onSelectGrou
     finally { setReadingFile(false); }
   }
 
-  return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入一个或多个专题名称，AI 会自动选择分类并生成内容。多个名称用 ; 分隔，也可以导入 .txt 文件。完成后可在草稿箱检查。</p><ModelGroupPicker groups={groups} selectedId={selectedGroupId} status={groupsStatus} onSelect={onSelectGroup} onSave={onSaveGroup} /><form onSubmit={submit}><label htmlFor="topic-title">专题名称</label><textarea id="topic-title" rows={5} placeholder="例如：Redis 持久化机制;MySQL 索引原理" value={input} disabled={busy} onChange={event => { setInput(event.target.value); setFileError(""); setSubmission(null); }} aria-describedby="topic-input-help" /><p id="topic-input-help" className="create-input-help">用英文 ; 或中文 ； 分隔，每个名称最多 120 字，单次最多 100 个任务。</p><label className="create-file-label" htmlFor="topic-file">导入文本文件（.txt）</label><input id="topic-file" type="file" accept=".txt,text/plain" disabled={busy || readingFile} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />{fileError && <p className="create-input-error" role="alert">{fileError}</p>}{invalidTitle && <p className="create-input-error" role="alert">专题名称不能超过 120 字：{invalidTitle}</p>}{titles.length > 100 && <p className="create-input-error" role="alert">单次最多提交 100 个专题。</p>}<div className="generation-list"><span>生成内容 · {titles.length} 个专题</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={!canSubmit}>{busy ? "正在提交任务…" : titles.length > 1 ? `AI 生成 ${titles.length} 个专题` : "AI 生成专题"}</button>{submission && <div className="create-submit-success" role="status"><strong>已提交 {submission.createdCount} 个生成任务</strong><button type="button" onClick={onViewTasks}>查看生成任务 →</button></div>}<button type="button" className="text-btn" disabled={busy || readingFile || titles.length !== 1 || !!invalidTitle} onClick={() => onManual(titles[0])}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
+  return <section className="create-wrap"><div className="eyebrow">创建知识专题</div><h1 className="hero-title">你想掌握什么？</h1><p className="hero-copy">输入一个或多个专题名称，AI 会自动选择分类并生成内容。多个名称用 ; 分隔，也可以导入 .txt 文件。完成后可在草稿箱检查。</p><ModelGroupPicker groups={groups} selectedId={selectedGroupId} status={groupsStatus} onSelect={onSelectGroup} onSave={onSaveGroup} /><form onSubmit={submit}><label htmlFor="topic-title">专题名称</label><textarea id="topic-title" rows={5} placeholder="例如：Redis 持久化机制;MySQL 索引原理" value={input} disabled={busy} onChange={event => { setInput(event.target.value); setFileError(""); setSubmission(null); }} aria-describedby="topic-input-help" /><p id="topic-input-help" className="create-input-help">用英文 ; 或中文 ； 分隔，每个名称最多 120 字，单次最多 100 个任务。</p><label className="create-file-label" htmlFor="topic-file">导入文本文件（.txt）</label><input id="topic-file" type="file" accept=".txt,text/plain" disabled={busy || readingFile} onChange={event => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />{fileError && <p className="create-input-error" role="alert">{fileError}</p>}{invalidTitle && <p className="create-input-error" role="alert">专题名称不能超过 120 字：{invalidTitle}</p>}{titles.length > 100 && <p className="create-input-error" role="alert">单次最多提交 100 个专题。</p>}<div className="generation-list"><span>生成内容 · {titles.length} 个专题</span><p>自动分类 · 回答重点 · 原理讲解 · 面试追问</p></div><button className="primary-btn create-submit" disabled={!canSubmit}>{busy ? "正在提交任务…" : titles.length > 1 ? `AI 生成 ${titles.length} 个专题` : "AI 生成专题"}</button>{submission && <div className="create-submit-success" role="status">{submission.createdCount > 0 && <><strong>已提交 {submission.createdCount} 个生成任务</strong><button type="button" onClick={onViewTasks}>查看生成任务 →</button></>}{submission.skippedTitles.length > 0 && <p>已跳过同名专题：{submission.skippedTitles.join("、")}</p>}</div>}<button type="button" className="text-btn" disabled={busy || readingFile || titles.length !== 1 || !!invalidTitle} onClick={() => onManual(titles[0])}>先创建空白专题</button></form><p className="fine-print">AI 生成的内容可能有误，阅读时请核对技术细节。</p></section>;
 }
 
 function PointBlock({ point, activity, mastery, canEdit, onSave, onVerify, onControl, onGenerateAnswer }: { point: KnowledgePoint; activity?: PointActivity; mastery: number; canEdit: boolean; onSave: (point: KnowledgePoint, content: string) => Promise<boolean>; onVerify: (point: KnowledgePoint) => void; onControl: (id: string, action: "favorite" | "unfavorite" | "exclude" | "restore") => Promise<boolean>; onGenerateAnswer: (point: KnowledgePoint, question: string) => Promise<string | null> }) {

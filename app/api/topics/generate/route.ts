@@ -34,17 +34,11 @@ export async function POST(request: Request) {
   const existingTitles = new Set((existingTopics || []).map(topic => topic.title));
   const queuedTitles = new Set<string>();
   const created: { title: string; topicId: string; jobId: string }[] = [];
+  const skipped: { title: string; reason: string }[] = [];
   const failed: { title: string; error: string; jobId?: string }[] = [];
   for (const title of normalizedTitles) {
     if (existingTitles.has(title) || queuedTitles.has(title)) {
-      const message = existingTitles.has(title) ? "已有同名专题，已跳过生成" : "本次提交已有同名专题，已跳过生成";
-      const { data: job, error: jobError } = await db.from("topic_generation_jobs").insert({
-        user_id: auth.user.id, input_title: title, model_name: config.model,
-        model_group_id: body.groupId && body.groupId !== "env" ? body.groupId : null,
-        prompt_version: "v6", status: "failed", error_message: message,
-        raw_output: { stage: "duplicate_title" }, finished_at: new Date().toISOString(),
-      }).select("id").single();
-      failed.push({ title, error: jobError ? `${message}；失败记录保存失败：${jobError.message}` : message, ...(job ? { jobId: job.id } : {}) });
+      skipped.push({ title, reason: existingTitles.has(title) ? "已有同名专题" : "本次提交已有同名专题" });
       continue;
     }
     const { data: topic, error: topicError } = await db.from("topics").insert({ user_id: auth.user.id, title, difficulty: body.difficulty || 2, status: "draft", generation_status: "pending" }).select("id").single();
@@ -59,5 +53,5 @@ export async function POST(request: Request) {
     created.push({ title, topicId: topic.id, jobId: job.id });
   }
   if (created.length) after(() => dispatchGenerationJobs(token));
-  return Response.json({ created, failed, status: created.length ? "pending" : "failed", ...(titles.length === 1 && created[0] ? { topicId: created[0].topicId, jobId: created[0].jobId } : {}) }, { status: created.length ? 202 : failed.some(item => item.jobId) ? 200 : 500 });
+  return Response.json({ created, skipped, failed, status: created.length ? "pending" : skipped.length && !failed.length ? "skipped" : "failed", ...(titles.length === 1 && created[0] ? { topicId: created[0].topicId, jobId: created[0].jobId } : {}) }, { status: created.length ? 202 : skipped.length && !failed.length ? 200 : 500 });
 }
