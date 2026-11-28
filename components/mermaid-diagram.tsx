@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 let configured = false;
 let diagramNumber = 0;
@@ -11,6 +12,31 @@ export function MermaidDiagram({ source }: { source: string }) {
   const [svg, setSvg] = useState("");
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [actualSize, setActualSize] = useState(false);
+  const expandRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const expandButton = expandRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+      if (event.key === "Tab") {
+        const buttons = document.querySelectorAll<HTMLButtonElement>(".mermaid-modal-toolbar button");
+        if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons[buttons.length - 1]?.focus(); }
+        else if (!event.shiftKey && document.activeElement === buttons[buttons.length - 1]) { event.preventDefault(); buttons[0]?.focus(); }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+      expandButton?.focus();
+    };
+  }, [expanded]);
 
   useEffect(() => {
     const element = figureRef.current;
@@ -86,12 +112,16 @@ export function MermaidDiagram({ source }: { source: string }) {
   }, [source, visible]);
 
   if (!source || failed || source.length > 12000) return <div className="mermaid-fallback"><p>图表暂时无法显示，以下是原始内容：</p><pre><code>{source}</code></pre></div>;
-  return <figure ref={figureRef} className={`mermaid-diagram${expanded ? " is-expanded" : ""}`} aria-label="知识图表">
+  return <figure ref={figureRef} className="mermaid-diagram" aria-label="知识图表">
     <figcaption className="mermaid-heading">
       <span className="mermaid-heading-label">图解</span>
-      {svg && <button type="button" className="mermaid-expand" onClick={() => setExpanded(!expanded)} aria-pressed={expanded}>{expanded ? "适应宽度" : "放大查看"}<span aria-hidden="true">↗</span></button>}
+      {svg && <button ref={expandRef} type="button" className="mermaid-expand" onClick={() => { setActualSize(false); setExpanded(true); }}>放大查看<span aria-hidden="true">↗</span></button>}
     </figcaption>
-    {svg ? <div className="mermaid-viewport"><div className="mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} /></div> : <div className="mermaid-loading" role="status">正在绘制图表…</div>}
+    {svg ? <div className="mermaid-viewport">{!expanded && <div className="mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} />}</div> : <div className="mermaid-loading" role="status">正在绘制图表…</div>}
     {svg && <details><summary>查看图表源码</summary><pre><code>{source}</code></pre></details>}
+    {expanded && createPortal(<div className="mermaid-modal" role="dialog" aria-modal="true" aria-label="放大查看知识图表">
+      <div className="mermaid-modal-toolbar"><strong>图解</strong><span>拖动滚动区域查看完整图表</span><button type="button" onClick={() => setActualSize(value => !value)}>{actualSize ? "适应窗口" : "原始大小"}</button><button ref={closeRef} type="button" onClick={() => setExpanded(false)} aria-label="关闭图解">关闭 ×</button></div>
+      <div className={`mermaid-modal-viewport${actualSize ? " is-actual-size" : ""}`}><div className="mermaid-modal-svg" dangerouslySetInnerHTML={{ __html: svg }} /></div>
+    </div>, document.body)}
   </figure>;
 }

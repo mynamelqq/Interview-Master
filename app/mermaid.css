@@ -43,12 +43,23 @@
 .markdown .mermaid-expand:focus-visible { outline: 2px solid #8eb4e7; outline-offset: 3px; border-radius: 2px; }
 .markdown .mermaid-expand span { font-size: 14px; line-height: 1; }
 
-.markdown .mermaid-viewport { min-width: 0; overflow-x: hidden; padding: 24px 0; }
-.markdown .mermaid-svg { display: flex; justify-content: center; width: 100%; min-width: 0; }
-.markdown .mermaid-svg svg { display: block; flex: none; width: auto; max-width: 100% !important; height: auto; }
-.markdown .mermaid-diagram.is-expanded .mermaid-viewport { overflow-x: auto; }
-.markdown .mermaid-diagram.is-expanded .mermaid-svg { width: max-content; min-width: 100%; }
-.markdown .mermaid-diagram.is-expanded .mermaid-svg svg { max-width: none !important; }
+.markdown .mermaid-viewport { min-width: 0; max-height: min(460px, 56vh); overflow: auto; padding: 16px 0; scrollbar-color: #b7c6d9 transparent; }
+.markdown .mermaid-svg { display: flex; justify-content: center; width: max-content; min-width: 100%; }
+.markdown .mermaid-svg svg { display: block; flex: none; width: auto; max-width: none !important; height: auto; }
+
+.mermaid-modal { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; background: #f5f7fa; color: #243249; }
+.mermaid-modal-toolbar { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px clamp(16px, 3vw, 40px); border-bottom: 1px solid #dce4ef; background: #fff; }
+.mermaid-modal-toolbar strong { font-size: 15px; }
+.mermaid-modal-toolbar span { flex: 1; color: #718198; font-size: 12px; }
+.mermaid-modal-toolbar button { border: 1px solid #d5deea; border-radius: 6px; background: #fff; color: #40536e; padding: 8px 12px; font-size: 12px; cursor: pointer; }
+.mermaid-modal-toolbar button:hover { border-color: #95b7e9; color: #286bd4; }
+.mermaid-modal-toolbar button:focus-visible { outline: 2px solid #3978e8; outline-offset: 2px; }
+.mermaid-modal-viewport { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.mermaid-modal-svg { flex: none; display: flex; align-items: center; justify-content: center; min-width: 0; max-width: 100%; max-height: 100%; }
+.mermaid-modal-svg svg { display: block; width: auto; height: auto; max-width: calc(100vw - 48px) !important; max-height: calc(100dvh - 112px); }
+.mermaid-modal-viewport.is-actual-size { display: block; }
+.mermaid-modal-viewport.is-actual-size .mermaid-modal-svg { width: max-content; max-width: none; max-height: none; margin: auto; }
+.mermaid-modal-viewport.is-actual-size svg { max-width: none !important; max-height: none; }
 
 .markdown .mermaid-svg .nodeLabel p { margin: 0; line-height: 1.65; font-weight: 500; }
 .markdown .mermaid-svg svg .node rect { rx: 6px; ry: 6px; filter: none !important; }
@@ -68,4 +79,8 @@
 @media (max-width: 760px) {
   .markdown .mermaid-diagram { padding: 12px 12px 8px; }
   .markdown .mermaid-viewport { padding: 9px 0 11px; }
+  .mermaid-modal-toolbar { flex-wrap: wrap; gap: 8px; }
+  .mermaid-modal-toolbar span { order: 2; flex-basis: 100%; }
+  .mermaid-modal-toolbar button:first-of-type { margin-left: auto; }
+  .mermaid-modal-svg svg { max-height: calc(100dvh - 146px); }
 }

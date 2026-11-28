@@ -5,21 +5,38 @@ export const maxDuration = 300;
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 
 type ScanPoint = { id: string; title: string; content_md: string | null; parent_id: string | null };
+type ExistingVisual = { knowledge_point_id: string | null; visual_type: string; title: string; caption: string; source_content: string; replaces_mermaid: boolean };
 
-async function analyze(topic: string, points: ScanPoint[], mermaidOnly: boolean) {
+async function analyze(topic: string, chapter: string, points: ScanPoint[], existing: ExistingVisual[], mermaidOnly: boolean) {
   const key = process.env.AI_API_KEY;
   const model = process.env.AI_MODEL;
   const base = process.env.AI_BASE_URL;
   if (!key || !model || !base) throw new Error("请先配置 AI_BASE_URL、AI_MODEL 和 AI_API_KEY");
-  const response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model, response_format: { type: "json_object" }, messages: [
-      { role: "system", content: "你是技术面试知识图解编辑。不要刻意增加视觉内容，也不要按知识点平均分配图。只有图示比现有文字或已有图表更能帮助用户理解机制、流程、结构、关系或关键对比时才提出建议。纯定义、简单结论、已有清晰解释的内容保持纯文字；没有合适建议时返回空 suggestions 数组。严格返回 JSON，不要输出 Markdown。" },
-      { role: "user", content: `专题：${topic}。模式：${mermaidOnly ? "只检查已有 Mermaid。仅当重新绘制能明显提升理解时给出建议，replaces_mermaid=true；原图已经清楚时不建议替换" : "分析视觉需求。流程和时序优先 mermaid；抽象结构可用 image；对比优先 table"}。逐条比较现有内容和补图后的理解收益，不要为视觉丰富或装饰而提建议。分数 complexity、relationships、benefit 均为 0-5，优先级按 0.4C+0.3R+0.3E；仅当 benefit 至少 4 且优先级至少 3.5 时建议。可以对整个专题返回 {"suggestions":[]}。返回 {"suggestions":[{"point_id":"原始 ID","visual_type":"mermaid|image|table","title":"标题","caption":"一行图注","rationale":"图示具体解决的理解困难","prompt":"生成图像的中文提示词或 Mermaid 源码或 Markdown 表格","complexity":4,"relationships":4,"benefit":5,"replaces_mermaid":false}]}。图片提示词要准确描述技术关系，手绘讲解风、浅色纸张、清晰箭头、少量中文标签、无装饰性人物。不要编造正文没有的细节,字迹清晰易读。知识点：${JSON.stringify(points.map(point => ({ id: point.id, title: point.title, content: (point.content_md || "").slice(0, 1700), mermaid: extractMermaid(point.content_md || "").slice(0, 2) })))}` },
-    ] }),
-    signal: AbortSignal.timeout(180000),
-  });
+  const endpoint = `${base.replace(/\/$/, "")}/chat/completions`;
+  const requestBody = JSON.stringify({ model, response_format: { type: "json_object" }, messages: [
+    { role: "system", content: "你是技术面试知识图解编辑。按章节理解整体结构和知识点之间的关系，只提出能明显降低理解难度的图示。重点检查结构、执行流程、时序、状态变化和关键对比；已有图示只在缺少不同且必要的视角时补充。一个知识点本轮最多一条建议，纯定义或现有解释足够清楚时不建议。严格返回 JSON。" },
+    { role: "user", content: `专题：${topic}；章节：${chapter}。模式：${mermaidOnly ? "只优化已有 Mermaid，只有原图存在明显理解障碍时提出替换建议，replaces_mermaid=true" : "分析章节总览、知识点机制和跨知识点关系；流程优先 mermaid，复杂结构可用 image，对比优先 table"}。已有图示仅提供描述，请勿假设看到了图片。不要重复已有图示的主题和信息，不要为增加数量而补图。分数 complexity、relationships、benefit 均为 0-5；仅当 benefit 至少 4 且优先级至少 3.5 时建议。没有合适内容返回 {"suggestions":[]}。返回 {"suggestions":[{"point_id":"原始 ID","visual_type":"mermaid|image|table","title":"标题","caption":"一行图注","rationale":"解决的具体理解困难及与已有图示的区别","prompt":"详细中文图像描述或 Mermaid 源码或 Markdown 表格","complexity":4,"relationships":4,"benefit":5,"replaces_mermaid":false}]}。章节总览图关联到最能代表该机制的知识点。图片描述应写清组件、层级、数据流、箭头含义、关键标签及边界条件；手绘讲解风、浅色纸张、字迹清晰，不添加正文没有的机制。知识点：${JSON.stringify(points.map(point => ({ id: point.id, title: point.title, content: (point.content_md || "").slice(0, 3000), mermaid: extractMermaid(point.content_md || "").slice(0, 2), existing_visuals: existing.filter(visual => visual.knowledge_point_id === point.id).map(visual => ({ type: visual.visual_type, title: visual.title, caption: visual.caption, description: visual.visual_type === "image" ? visual.source_content.slice(0, 700) : visual.source_content.slice(0, 300) })) })))}` },
+  ] });
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: requestBody,
+        signal: AbortSignal.timeout(180000),
+      });
+      break;
+    } catch (error) {
+      const cause = error instanceof Error ? error.cause as { code?: string; errors?: { code?: string }[] } | undefined : undefined;
+      const host = new URL(endpoint).host;
+      const code = cause?.code || cause?.errors?.[0]?.code;
+      const detail = code ? `，错误代码 ${code}` : error instanceof Error && error.name === "TimeoutError" ? "，请求超时" : "";
+      if (attempt === 1 || error instanceof Error && error.name === "TimeoutError") throw new Error(`视觉分析无法连接 AI 网关 ${host}${detail}，请检查网关连通性后重试`);
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+  }
+  if (!response) throw new Error("视觉分析请求未能启动");
   if (!response.ok) throw new Error(`视觉分析请求失败（${response.status}）：${(await response.text()).slice(0, 300)}`);
   const payload = await response.json();
   const raw = payload.choices?.[0]?.message?.content;
@@ -42,7 +59,7 @@ export async function POST(request: Request) {
     if (historyError) return Response.json({ error: historyError.message }, { status: 503 });
     if (shouldSkipVisualScan(body.mode || "topic", !!previous, body.force === true)) return Response.json({ skipped: true, reason: "这个专题已扫描，未重复调用模型" });
   }
-  const { data: points, error: pointsError } = await db.from("knowledge_points").select("id,title,content_md,parent_id").eq("topic_id", topic.id).not("parent_id", "is", null).order("sort_order");
+  const { data: points, error: pointsError } = await db.from("knowledge_points").select("id,title,content_md,parent_id").eq("topic_id", topic.id).order("sort_order");
   if (pointsError) return Response.json({ error: pointsError.message }, { status: 503 });
   let jobId = body.jobId;
   if (jobId) {
@@ -60,36 +77,49 @@ export async function POST(request: Request) {
     return job?.status === "cancelled";
   }
   try {
-    const { data: existing, error: existingError } = await db.from("knowledge_point_visuals").select("knowledge_point_id").in("knowledge_point_id", (points || []).map(point => point.id).length ? (points || []).map(point => point.id) : ["00000000-0000-0000-0000-000000000000"]);
-    if (existingError) throw existingError;
-    const occupied = new Set((existing || []).map(item => item.knowledge_point_id));
-    const eligible = (points || []).filter(point => !occupied.has(point.id) && (body.mode !== "mermaid" || extractMermaid(point.content_md || "").length > 0));
+    const { data: existing, error: existingError } = await db.from("knowledge_point_visuals").select("knowledge_point_id,visual_type,title,caption,source_content,replaces_mermaid").eq("topic_id", topic.id);
+    if (existingError) throw new Error(`读取已有图示失败：${existingError.message}`);
+    const visuals = (existing || []) as ExistingVisual[];
+    const sections = (points || []).filter(point => !point.parent_id);
+    const eligible = (points || []).filter(point => point.parent_id && (body.mode === "mermaid"
+      ? extractMermaid(point.content_md || "").length > 0 && !visuals.some(visual => visual.knowledge_point_id === point.id && visual.replaces_mermaid)
+      : visuals.filter(visual => visual.knowledge_point_id === point.id).length < 2));
+    const groups = sections.map(section => ({ title: section.title, points: eligible.filter(point => point.parent_id === section.id) }));
+    const ungrouped = eligible.filter(point => !sections.some(section => section.id === point.parent_id));
+    if (ungrouped.length) groups.push({ title: "其他知识点", points: ungrouped });
     let inserted = 0;
-    for (let start = 0; start < eligible.length; start += 15) {
+    for (const group of groups) for (let start = 0; start < group.points.length; start += 8) {
       if (await cancelled()) return Response.json({ jobId, cancelled: true });
-      const chunk = eligible.slice(start, start + 15);
-      const suggestions = await analyze(topic.title, chunk, body.mode === "mermaid");
+      const chunk = group.points.slice(start, start + 8);
+      const suggestions = await analyze(topic.title, group.title, chunk, visuals, body.mode === "mermaid");
       if (await cancelled()) return Response.json({ jobId, cancelled: true });
-      const rows = suggestions.filter(isWorthVisualizing).map(item => ({
+      const proposed = new Set<string>();
+      const rows = suggestions.filter(item => {
+        if (!isWorthVisualizing(item) || proposed.has(item.point_id)) return false;
+        proposed.add(item.point_id);
+        return !visuals.some(visual => visual.knowledge_point_id === item.point_id && visual.visual_type === item.visual_type && visual.title.trim().toLowerCase() === item.title.trim().toLowerCase());
+      }).map(item => ({
         topic_id: topic.id, knowledge_point_id: item.point_id, point_title: chunk.find(point => point.id === item.point_id)?.title || "知识点", visual_type: item.visual_type, title: item.title, caption: item.caption,
         rationale: item.rationale, source_content: item.prompt, priority_score: visualPriority(item.complexity, item.relationships, item.benefit),
         replaces_mermaid: body.mode === "mermaid" || item.replaces_mermaid, status: "pending",
       }));
       if (rows.length) {
         const { error } = await db.from("knowledge_point_visuals").insert(rows);
-        if (error) throw error;
+        if (error) throw new Error(`保存视觉建议失败：${error.message}`);
         inserted += rows.length;
+        visuals.push(...rows.map(row => ({ knowledge_point_id: row.knowledge_point_id, visual_type: row.visual_type, title: row.title, caption: row.caption, source_content: row.source_content, replaces_mermaid: row.replaces_mermaid })));
       }
     }
     if (await cancelled()) return Response.json({ jobId, cancelled: true });
-    const { error: recordError } = await db.from("visual_topic_scans").upsert({ topic_id: topic.id, scan_mode: scanKind, scanned_at: new Date().toISOString(), point_count: points?.length || 0, suggestion_count: inserted }, { onConflict: "topic_id,scan_mode" });
-    if (recordError) throw recordError;
+    const pointCount = (points || []).filter(point => point.parent_id).length;
+    const { error: recordError } = await db.from("visual_topic_scans").upsert({ topic_id: topic.id, scan_mode: scanKind, scanned_at: new Date().toISOString(), point_count: pointCount, suggestion_count: inserted }, { onConflict: "topic_id,scan_mode" });
+    if (recordError) throw new Error(`记录专题扫描状态失败：${recordError.message}`);
     if (!body.jobId) await db.from("visual_enhancement_jobs").update({ status: "completed", scanned_topics: 1, suggested_count: inserted, updated_at: new Date().toISOString() }).eq("id", jobId);
     else {
       const { data: job } = await db.from("visual_enhancement_jobs").select("scanned_topics,suggested_count").eq("id", jobId).single();
       await db.from("visual_enhancement_jobs").update({ scanned_topics: (job?.scanned_topics || 0) + 1, suggested_count: (job?.suggested_count || 0) + inserted, updated_at: new Date().toISOString() }).eq("id", jobId);
     }
-    return Response.json({ jobId, scanned: points?.length || 0, suggested: inserted });
+    return Response.json({ jobId, scanned: pointCount, suggested: inserted });
   } catch (error) {
     if (await cancelled()) return Response.json({ jobId, cancelled: true });
     await db.from("visual_enhancement_jobs").update({ status: "failed", error_message: error instanceof Error ? error.message.slice(0, 500) : "扫描失败", updated_at: new Date().toISOString() }).eq("id", jobId);
