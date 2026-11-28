@@ -51,21 +51,41 @@ export function withoutMermaid(content: string): string {
   return content.replace(/```mermaid\s*\r?\n[\s\S]*?```/gi, "").trim();
 }
 
-export function imageGenerationEndpoint(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  if (url.protocol !== "https:") throw new Error("AI_BASE_URL 必须使用 HTTPS");
+export function imageGenerationEndpoint(baseUrl: string, imageUrl?: string): string {
+  const url = new URL(imageUrl || baseUrl);
+  if (url.protocol !== "https:") throw new Error("图片生成接口必须使用 HTTPS");
+  if (url.username || url.password) throw new Error("图片生成接口不能包含账号或密码");
+  if (imageUrl) {
+    if (url.pathname.replace(/\/$/, "").endsWith("/v1")) url.pathname = `${url.pathname.replace(/\/$/, "")}/images/generations`;
+    return url.toString();
+  }
   url.pathname = "/api/v1/services/aigc/multimodal-generation/generation";
   url.search = "";
   url.hash = "";
   return url.toString();
 }
 
+export function isDashscopeImageEndpoint(endpoint: string): boolean {
+  return new URL(endpoint).pathname.endsWith("/api/v1/services/aigc/multimodal-generation/generation");
+}
+
+export function imageGenerationBody(model: string, prompt: string, dashscope: boolean): object {
+  if (dashscope) return { model, input: { messages: [{ role: "user", content: [{ text: prompt }] }] }, parameters: { prompt_extend: true, size: "1536*1024" } };
+  return { model, prompt, n: 1, size: "1536x1024" };
+}
+
+export function imageBase64(data: unknown): string | null {
+  const root = data as { data?: { b64_json?: unknown }[] };
+  const value = root?.data?.[0]?.b64_json;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export function imageResultUrl(data: unknown): string {
-  const result = data as { output?: { choices?: { message?: { content?: { image?: string }[] } }[] } };
-  const image = result?.output?.choices?.[0]?.message?.content?.find(item => typeof item.image === "string")?.image;
+  const result = data as { data?: { url?: string }[]; output?: { choices?: { message?: { content?: { image?: string }[] } }[] } };
+  const image = result?.data?.[0]?.url || result?.output?.choices?.[0]?.message?.content?.find(item => typeof item.image === "string")?.image;
   if (!image) throw new Error("图片模型未返回图片地址");
   const url = new URL(image);
-  if (url.protocol !== "https:" || !/^dashscope-[\w-]+\.oss(?:-[\w-]+)?\.aliyuncs\.com$/i.test(url.hostname)) {
+  if (url.protocol !== "https:" || url.username || url.password || !url.hostname.includes(".") || /^(localhost|\d+\.\d+\.\d+\.\d+)$/i.test(url.hostname) || /\.(local|localhost|internal)$/i.test(url.hostname)) {
     throw new Error("图片模型返回了非预期的下载地址");
   }
   return image;

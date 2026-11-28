@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extractMermaid, imageGenerationEndpoint, imageResultUrl, isPng, isWorthVisualizing, normalizeVisualSuggestions, shouldSkipVisualScan, visualPriority, withoutMermaid } from "../lib/visual-enhancement.ts";
+import { extractMermaid, imageBase64, imageGenerationBody, imageGenerationEndpoint, imageResultUrl, isDashscopeImageEndpoint, isPng, isWorthVisualizing, normalizeVisualSuggestions, shouldSkipVisualScan, visualPriority, withoutMermaid } from "../lib/visual-enhancement.ts";
 
 test("batch visual scans skip completed topics unless explicitly selected for rescan", () => {
   assert.equal(shouldSkipVisualScan("library", true, false), true);
@@ -34,11 +34,25 @@ test("an approved replacement can hide only the original Mermaid block", () => {
   assert.equal(withoutMermaid(markdown), "机制说明\n\n\n\n记住刷盘时机。");
 });
 
-test("image endpoint uses the configured gateway host and rejects unsafe result hosts", () => {
+test("image endpoint uses the configured gateway host and rejects unsafe result URLs", () => {
   assert.equal(imageGenerationEndpoint("https://example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"), "https://example.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
+  assert.equal(imageGenerationEndpoint("https://gateway.example.com", "https://images.example.com/custom/generate"), "https://images.example.com/custom/generate");
+  assert.equal(imageGenerationEndpoint("", "https://images.example.com/v1"), "https://images.example.com/v1/images/generations");
+  assert.throws(() => imageGenerationEndpoint("", "http://images.example.com/generate"), /HTTPS/);
+  assert.throws(() => imageGenerationEndpoint("", "https://user:secret@images.example.com/generate"), /账号或密码/);
   const result = { output: { choices: [{ message: { content: [{ image: "https://dashscope-result-sz.oss-cn-shenzhen.aliyuncs.com/image.png" }] } }] } };
   assert.equal(imageResultUrl(result), result.output.choices[0].message.content[0].image);
-  assert.throws(() => imageResultUrl({ output: { choices: [{ message: { content: [{ image: "https://example.com/secret" }] } }] } }), /非预期/);
+  assert.equal(imageResultUrl({ data: [{ url: "https://images.example.com/generated.png" }] }), "https://images.example.com/generated.png");
+  assert.throws(() => imageResultUrl({ data: [{ url: "http://images.example.com/generated.png" }] }), /非预期/);
+  assert.throws(() => imageResultUrl({ data: [{ url: "https://127.0.0.1/generated.png" }] }), /非预期/);
+});
+
+test("image requests match the selected API protocol", () => {
+  assert.equal(isDashscopeImageEndpoint("https://example.com/v1/images/generations"), false);
+  assert.equal(isDashscopeImageEndpoint("https://example.com/api/v1/services/aigc/multimodal-generation/generation"), true);
+  assert.deepEqual(imageGenerationBody("image-model", "画图", false), { model: "image-model", prompt: "画图", n: 1, size: "1536x1024" });
+  assert.equal(imageBase64({ data: [{ b64_json: "aGVsbG8=" }] }), "aGVsbG8=");
+  assert.equal(imageBase64({ output: { choices: [] } }), null);
 });
 
 test("downloaded visual must have a PNG signature before upload", () => {
