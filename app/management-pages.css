@@ -126,12 +126,17 @@
 .progress-track { width: 100%; height: 4px; margin-top: 5px; overflow: hidden; border-radius: 4px; background: #e9edf2; }
 .progress-track i { display: block; height: 100%; border-radius: inherit; background: #16a37a; }
 .library-row-action, .draft-workrow-action { justify-self: end; padding: 8px 0; border: 0; background: none; color: #286bd4; font-size: 12px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.library-row-actions { display: flex; align-items: center; justify-self: end; gap: 13px; }
+.library-delete-topic { padding: 7px 0; border: 0; background: none; color: #a35449; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.library-delete-topic:hover { color: #8c332b; text-decoration: underline; }
+.library-delete-topic:disabled { opacity: .5; cursor: not-allowed; }
 .library-list.is-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; overflow: visible; border: 0; background: transparent; }
 .library-list.is-grid .library-row { display: flex; flex-direction: column; align-items: stretch; gap: 15px; min-height: 180px; padding: 20px; border: 1px solid #e0e6ee; border-radius: 9px; background: #fff; }
 .library-list.is-grid .library-row-progress { display: flex; align-items: center; gap: 7px; margin-top: auto; }
 .library-list.is-grid .library-row-progress strong { font-size: 14px; }
 .library-list.is-grid .library-row-progress .progress-track { width: 70px; margin: 0 0 0 auto; }
 .library-list.is-grid .library-row-action { align-self: flex-start; }
+.library-list.is-grid .library-row-actions { justify-self: auto; align-self: stretch; justify-content: space-between; }
 .management-empty { margin-top: 16px; padding: 34px; border: 1px dashed #cdd7e3; border-radius: 9px; background: #fff; color: #64748b; font-size: 13px; line-height: 1.7; }
 .global-draft-results { margin-top: 28px; }
 .global-draft-results h2 { margin: 0 0 12px; color: #334155; font-size: 14px; }
@@ -156,7 +161,8 @@
 
 @media (max-width: 900px) {
   .library-row { grid-template-columns: minmax(0, 1fr) 92px; gap: 18px; }
-  .library-row-action { grid-column: 1 / -1; justify-self: start; padding: 0; }
+  .library-row-actions { grid-column: 1 / -1; justify-self: start; }
+  .library-row-action { padding: 0; }
   .library-list.is-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
